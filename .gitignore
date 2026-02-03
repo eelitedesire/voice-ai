@@ -44,4 +44,5 @@ next-env.d.ts
 speaker_db.json
 session_logs/
 *.wav
+/audio/
 models/

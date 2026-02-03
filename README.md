@@ -66,17 +66,37 @@ GROQ_API_KEY=your_groq_api_key_here
 
 4. **Enroll speakers** (Phase A)
 
-Prepare two audio files:
+You have two options for enrolling speakers:
+
+**Option A: Interactive Recording (Recommended)**
+
+Record audio samples directly from your microphone:
+
+```bash
+# Install recording tool (one-time setup)
+# macOS:
+brew install sox
+
+# Linux:
+sudo apt-get install sox
+
+# Then run enrollment
+npm run enroll
+```
+
+The script will guide you through recording both speakers interactively.
+
+**Option B: Use Existing Audio Files**
+
+If you already have audio files:
 - `therapist.wav` - Sample of therapist's voice (16kHz, mono, 5-10 seconds)
 - `client.wav` - Sample of client's voice (16kHz, mono, 5-10 seconds)
-
-Run enrollment:
 
 ```bash
 npm run enroll -- --therapist ./audio/therapist.wav --client ./audio/client.wav
 ```
 
-This creates `speaker_db.json` with voiceprints for speaker identification.
+Both options create `speaker_db.json` with voiceprints for speaker identification.
 
 5. **Start the development server**
 
@@ -219,6 +239,32 @@ model: groq('llama-3.3-70b-versatile') // Change model here
 ```
 
 ## Troubleshooting
+
+### Recording Tools Not Found
+
+If you get "No recording tool found" when running `npm run enroll`:
+
+```bash
+# macOS:
+brew install sox
+# or
+brew install ffmpeg
+
+# Linux (Ubuntu/Debian):
+sudo apt-get install sox
+# or
+sudo apt-get install ffmpeg
+
+# Linux (Fedora/RHEL):
+sudo dnf install sox
+# or
+sudo dnf install ffmpeg
+
+# Windows:
+# Download and install from:
+# https://sox.sourceforge.net/
+# or https://ffmpeg.org/
+```
 
 ### Microphone Access Denied
 
