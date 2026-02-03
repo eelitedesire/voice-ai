@@ -130,21 +130,44 @@ check(
 if (fs.existsSync(modelsPath)) {
   // Check for required model files
   const requiredModels = [
-    'encoder.onnx',
-    'decoder.onnx',
-    'joiner.onnx',
-    'tokens.txt',
-    'speaker-embedding.onnx',
+    { name: 'encoder.onnx', minSize: 50 * 1024 * 1024 }, // ~50MB minimum
+    { name: 'decoder.onnx', minSize: 1 * 1024 * 1024 },  // ~1MB minimum
+    { name: 'joiner.onnx', minSize: 500 * 1024 },        // ~500KB minimum
+    { name: 'tokens.txt', minSize: 1000 },               // ~1KB minimum
+    { name: 'speaker-embedding.onnx', minSize: 30 * 1024 * 1024 }, // ~30MB minimum
   ];
 
   requiredModels.forEach(model => {
-    const modelPath = path.join(modelsPath, model);
-    check(
-      `Model: ${model}`,
-      fs.existsSync(modelPath),
-      'Found',
-      'Missing - run: npm run download-models'
-    );
+    const modelPath = path.join(modelsPath, model.name);
+    const exists = fs.existsSync(modelPath);
+
+    if (exists) {
+      const stats = fs.statSync(modelPath);
+      const sizeMB = (stats.size / (1024 * 1024)).toFixed(2);
+
+      if (stats.size < model.minSize) {
+        check(
+          `Model: ${model.name}`,
+          false,
+          '',
+          `Too small (${sizeMB} MB) - likely corrupted. Run: npm run download-models`
+        );
+      } else {
+        check(
+          `Model: ${model.name}`,
+          true,
+          `Found (${sizeMB} MB)`,
+          ''
+        );
+      }
+    } else {
+      check(
+        `Model: ${model.name}`,
+        false,
+        '',
+        'Missing - run: npm run download-models'
+      );
+    }
   });
 }
 

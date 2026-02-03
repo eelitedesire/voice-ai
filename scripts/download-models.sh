@@ -19,11 +19,34 @@ cd models
 
 if [ ! -f "encoder.onnx" ]; then
     echo "⬇️  Downloading Zipformer model..."
-    wget -q --show-progress "$MODEL_URL" -O model.tar.bz2
+
+    # Download if tar file doesn't exist
+    if [ ! -f "model.tar.bz2" ]; then
+        wget -q --show-progress "$MODEL_URL" -O model.tar.bz2
+    fi
+
+    # Extract
     tar -xjf model.tar.bz2
+
+    # Move files from subdirectory
     mv sherpa-onnx-zipformer-en-2023-06-26/* .
-    rm -rf sherpa-onnx-zipformer-en-2023-06-26 model.tar.bz2
-    echo "✅ ASR models downloaded"
+    rm -rf sherpa-onnx-zipformer-en-2023-06-26
+
+    # Create symlinks with expected names
+    if [ -f "encoder-epoch-99-avg-1.onnx" ]; then
+        ln -sf encoder-epoch-99-avg-1.onnx encoder.onnx
+    fi
+    if [ -f "decoder-epoch-99-avg-1.onnx" ]; then
+        ln -sf decoder-epoch-99-avg-1.onnx decoder.onnx
+    fi
+    if [ -f "joiner-epoch-99-avg-1.onnx" ]; then
+        ln -sf joiner-epoch-99-avg-1.onnx joiner.onnx
+    fi
+
+    # Clean up tar file
+    rm -f model.tar.bz2
+
+    echo "✅ ASR models downloaded and configured"
 else
     echo "✅ ASR models already exist"
 fi
@@ -32,12 +55,30 @@ fi
 echo "Downloading speaker embedding model..."
 SPEAKER_MODEL_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recognition-models/wespeaker_en_voxceleb_resnet34.onnx"
 
+# Check if file exists and has valid size (should be ~40MB)
+if [ -f "speaker-embedding.onnx" ]; then
+    FILE_SIZE=$(stat -f%z "speaker-embedding.onnx" 2>/dev/null || stat -c%s "speaker-embedding.onnx" 2>/dev/null)
+    if [ "$FILE_SIZE" -lt 1000000 ]; then
+        echo "⚠️  Existing speaker-embedding.onnx is too small ($FILE_SIZE bytes), re-downloading..."
+        rm -f speaker-embedding.onnx
+    else
+        echo "✅ Speaker embedding model already exists"
+    fi
+fi
+
 if [ ! -f "speaker-embedding.onnx" ]; then
-    echo "⬇️  Downloading speaker embedding model..."
-    wget -q --show-progress "$SPEAKER_MODEL_URL" -O speaker-embedding.onnx
-    echo "✅ Speaker embedding model downloaded"
-else
-    echo "✅ Speaker embedding model already exists"
+    echo "⬇️  Downloading speaker embedding model (this may take a minute)..."
+    wget --show-progress "$SPEAKER_MODEL_URL" -O speaker-embedding.onnx
+
+    # Verify download
+    FILE_SIZE=$(stat -f%z "speaker-embedding.onnx" 2>/dev/null || stat -c%s "speaker-embedding.onnx" 2>/dev/null)
+    if [ "$FILE_SIZE" -lt 1000000 ]; then
+        echo "❌ Download failed or incomplete (file size: $FILE_SIZE bytes)"
+        rm -f speaker-embedding.onnx
+        exit 1
+    fi
+
+    echo "✅ Speaker embedding model downloaded successfully ($FILE_SIZE bytes)"
 fi
 
 cd ..
