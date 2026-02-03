@@ -1,0 +1,11 @@
+# Place your enrollment audio files here
+#
+# Required format:
+# - 16kHz sample rate
+# - Mono channel
+# - WAV format
+# - 5-15 seconds duration
+#
+# Example:
+# - therapist.wav
+# - client.wav
