@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "next lint",
     "enroll": "tsx scripts/enroll-speakers.ts",
-    "download-models": "bash scripts/download-models.sh"
+    "download-models": "bash scripts/download-models.sh",
+    "verify": "tsx scripts/verify-setup.ts"
   },
   "dependencies": {
     "next": "^15.1.6",
@@ -31,5 +32,12 @@
     "postcss": "^8",
     "autoprefixer": "^10.4.20",
     "tsx": "^4.19.2"
+  },
+  "optionalDependencies": {
+    "sherpa-onnx-darwin-arm64": "^1.10.30",
+    "sherpa-onnx-darwin-x64": "^1.10.30",
+    "sherpa-onnx-linux-x64": "^1.10.30",
+    "sherpa-onnx-linux-arm64": "^1.10.30",
+    "sherpa-onnx-win32-x64": "^1.10.30"
   }
 }

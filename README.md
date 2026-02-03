@@ -37,6 +37,9 @@ A simple web-based platform designed to assist in 2-person therapeutic sessions 
 
 ```bash
 npm install
+
+# Verify installation (optional but recommended)
+npm run verify
 ```
 
 2. **Download Sherpa-ONNX models**
@@ -223,9 +226,30 @@ Ensure your browser has permission to access the microphone. HTTPS is required f
 
 ### Sherpa-ONNX Errors
 
+**"Could not find sherpa-onnx-node" on macOS:**
+
+If you see an error like "Could not find sherpa-onnx-node", this means the platform-specific native addon isn't installed. Follow these steps:
+
+```bash
+# For macOS Apple Silicon (M1/M2/M3)
+npm install sherpa-onnx-darwin-arm64
+
+# For macOS Intel
+npm install sherpa-onnx-darwin-x64
+
+# Then set the library path (add to ~/.zshrc or ~/.bashrc for permanent fix)
+export DYLD_LIBRARY_PATH=$(pwd)/node_modules/sherpa-onnx-darwin-arm64:$DYLD_LIBRARY_PATH
+
+# Verify installation
+ls node_modules/sherpa-onnx-darwin-arm64/
+```
+
+**Other common issues:**
+
 1. Verify models are downloaded: `ls models/`
 2. Check model paths in `lib/sherpa-onnx.ts`
 3. Ensure `speaker_db.json` exists (run enrollment)
+4. On Linux, you may need to install `sherpa-onnx-linux-x64` or `sherpa-onnx-linux-arm64`
 
 ### Groq API Errors
 
