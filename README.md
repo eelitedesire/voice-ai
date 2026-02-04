@@ -80,7 +80,7 @@ brew install sox
 # Linux:
 sudo apt-get install sox
 
-# Then run enrollment
+# Run enrollment (library paths are set automatically)
 npm run enroll
 ```
 
@@ -274,7 +274,7 @@ Ensure your browser has permission to access the microphone. HTTPS is required f
 
 **"Could not find sherpa-onnx-node" on macOS:**
 
-If you see an error like "Could not find sherpa-onnx-node", this means the platform-specific native addon isn't installed. Follow these steps:
+If you see an error like "Could not find sherpa-onnx-node", the platform-specific native addon isn't installed:
 
 ```bash
 # For macOS Apple Silicon (M1/M2/M3)
@@ -283,12 +283,11 @@ npm install sherpa-onnx-darwin-arm64
 # For macOS Intel
 npm install sherpa-onnx-darwin-x64
 
-# Then set the library path (add to ~/.zshrc or ~/.bashrc for permanent fix)
-export DYLD_LIBRARY_PATH=$(pwd)/node_modules/sherpa-onnx-darwin-arm64:$DYLD_LIBRARY_PATH
-
 # Verify installation
-ls node_modules/sherpa-onnx-darwin-arm64/
+npm run check-addon
 ```
+
+Note: `DYLD_LIBRARY_PATH` is set automatically by the npm scripts - you don't need to set it manually.
 
 **Other common issues:**
 

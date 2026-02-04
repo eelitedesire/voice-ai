@@ -7,10 +7,10 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "enroll": "tsx scripts/enroll-speakers.ts",
+    "enroll": "bash scripts/run-with-addon.sh tsx scripts/enroll-speakers.ts",
     "download-models": "bash scripts/download-models.sh",
     "verify": "tsx scripts/verify-setup.ts",
-    "check-addon": "tsx scripts/check-addon.ts"
+    "check-addon": "bash scripts/run-with-addon.sh tsx scripts/check-addon.ts"
   },
   "dependencies": {
     "next": "^15.1.6",
