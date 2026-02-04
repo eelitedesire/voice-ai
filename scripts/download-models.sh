@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Download Sherpa-ONNX Models Script
-# This script downloads the necessary models for speech recognition and speaker identification
+# This script downloads the necessary models for speech recognition and speaker identification using curl
 
 set -e
 
@@ -11,7 +11,6 @@ echo "📦 Downloading Sherpa-ONNX Models..."
 mkdir -p models
 
 # Download a lightweight ASR model (example: Zipformer transducer)
-# Note: Adjust URLs based on actual Sherpa-ONNX model repository
 echo "Downloading ASR models..."
 MODEL_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-zipformer-en-2023-06-26.tar.bz2"
 
@@ -22,7 +21,8 @@ if [ ! -f "encoder.onnx" ]; then
 
     # Download if tar file doesn't exist
     if [ ! -f "model.tar.bz2" ]; then
-        wget -q --show-progress "$MODEL_URL" -O model.tar.bz2
+        # -L follows redirects, -o specifies output file, -# shows progress bar
+        curl -L "$MODEL_URL" -o model.tar.bz2 -#
     fi
 
     # Extract
@@ -68,7 +68,8 @@ fi
 
 if [ ! -f "speaker-embedding.onnx" ]; then
     echo "⬇️  Downloading speaker embedding model (this may take a minute)..."
-    wget --show-progress "$SPEAKER_MODEL_URL" -O speaker-embedding.onnx
+    # curl -L for redirects, -o for output, -# for progress
+    curl -L "$SPEAKER_MODEL_URL" -o speaker-embedding.onnx -#
 
     # Verify download
     FILE_SIZE=$(stat -f%z "speaker-embedding.onnx" 2>/dev/null || stat -c%s "speaker-embedding.onnx" 2>/dev/null)
