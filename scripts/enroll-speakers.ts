@@ -20,7 +20,7 @@
  *   - Audio format: 16kHz mono WAV
  */
 
-import { SherpaONNXManager } from '../lib/sherpa-onnx';
+import { SherpaONNXManager, VADManager } from '../lib/sherpa-onnx';
 import { AudioRecorder } from '../lib/audio-recorder';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -117,13 +117,38 @@ async function main() {
   console.log(`   Output database: ${outputPath}\n`);
 
   try {
-    console.log('🔧 Initializing Sherpa-ONNX...');
+    console.log('🔧 Initializing Sherpa-ONNX and VAD...');
     const sherpa = new SherpaONNXManager('./models');
+    const vad = new VADManager('./models');
 
     await sherpa.initializeSpeakerEmbedding();
+    await vad.initialize();
     await sherpa.loadSpeakerDatabase(outputPath);
 
-    console.log('✅ Sherpa-ONNX initialized\n');
+    console.log('✅ Sherpa-ONNX and VAD initialized\n');
+
+    // Validate recordings contain speech
+    console.log('🔍 Validating audio quality with VAD...');
+
+    const therapistHasSpeech = await vad.hasSpeech(therapistPath);
+    if (!therapistHasSpeech) {
+      console.error('❌ Therapist audio does not contain detectable speech!');
+      console.error('   Please ensure the recording has clear audio.');
+      vad.cleanup();
+      sherpa.cleanup();
+      process.exit(1);
+    }
+    console.log('✅ Therapist audio validated');
+
+    const clientHasSpeech = await vad.hasSpeech(clientPath);
+    if (!clientHasSpeech) {
+      console.error('❌ Client audio does not contain detectable speech!');
+      console.error('   Please ensure the recording has clear audio.');
+      vad.cleanup();
+      sherpa.cleanup();
+      process.exit(1);
+    }
+    console.log('✅ Client audio validated\n');
 
     // Enroll therapist
     console.log('🎤 Processing therapist voice...');
@@ -146,6 +171,7 @@ async function main() {
     console.log('  2. Open http://localhost:3000');
     console.log('  3. Start a therapy session\n');
 
+    vad.cleanup();
     sherpa.cleanup();
   } catch (error) {
     console.error('❌ Enrollment failed:', error);

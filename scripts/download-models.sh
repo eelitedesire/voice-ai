@@ -82,6 +82,27 @@ if [ ! -f "speaker-embedding.onnx" ]; then
     echo "✅ Speaker embedding model downloaded successfully ($FILE_SIZE bytes)"
 fi
 
+# Download VAD model (Voice Activity Detection)
+echo "Downloading VAD model..."
+VAD_MODEL_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx"
+
+if [ ! -f "silero_vad.onnx" ]; then
+    echo "⬇️  Downloading VAD model..."
+    curl -L "$VAD_MODEL_URL" -o silero_vad.onnx -#
+
+    # Verify download
+    FILE_SIZE=$(stat -f%z "silero_vad.onnx" 2>/dev/null || stat -c%s "silero_vad.onnx" 2>/dev/null)
+    if [ "$FILE_SIZE" -lt 100000 ]; then
+        echo "❌ Download failed or incomplete (file size: $FILE_SIZE bytes)"
+        rm -f silero_vad.onnx
+        exit 1
+    fi
+
+    echo "✅ VAD model downloaded successfully ($FILE_SIZE bytes)"
+else
+    echo "✅ VAD model already exists"
+fi
+
 cd ..
 
 echo ""

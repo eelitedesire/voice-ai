@@ -3,6 +3,139 @@ import { SpeakerDatabase, SpeakerProfile } from '@/types';
 import * as fs from 'fs';
 import * as path from 'path';
 
+export class VADManager {
+  private vad: any = null;
+  private modelPath: string;
+
+  constructor(modelPath: string = './models') {
+    this.modelPath = modelPath;
+  }
+
+  async initialize(): Promise<void> {
+    try {
+      const config = {
+        sileroVad: {
+          model: path.join(this.modelPath, 'silero_vad.onnx'),
+          minSilenceDuration: 0.5,  // 0.5 seconds of silence to split
+          minSpeechDuration: 0.25,  // 0.25 seconds minimum speech
+          threshold: 0.5,            // Detection threshold
+          windowSize: 512,
+        },
+        sampleRate: 16000,
+        numThreads: 1,
+        provider: 'cpu',
+        debug: 0,
+      };
+
+      this.vad = new sherpa.Vad(config);
+
+      if (!this.vad) {
+        throw new Error('Failed to create VAD instance');
+      }
+
+      console.log('VAD initialized successfully');
+    } catch (error) {
+      console.error('Failed to initialize VAD:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Check if audio file contains speech
+   */
+  async hasSpeech(audioPath: string): Promise<boolean> {
+    if (!this.vad) {
+      throw new Error('VAD not initialized');
+    }
+
+    try {
+      const wave = sherpa.readWave(audioPath);
+
+      if (!wave || !wave.samples) {
+        throw new Error(`Failed to read audio file: ${audioPath}`);
+      }
+
+      // Process audio in chunks
+      const chunkSize = 16000; // 1 second chunks at 16kHz
+      let hasSpeech = false;
+
+      for (let i = 0; i < wave.samples.length; i += chunkSize) {
+        const chunk = wave.samples.slice(i, Math.min(i + chunkSize, wave.samples.length));
+        this.vad.acceptWaveform({ sampleRate: wave.sampleRate, samples: chunk });
+
+        if (this.vad.isSpeech()) {
+          hasSpeech = true;
+          break;
+        }
+      }
+
+      this.vad.flush();
+      return hasSpeech;
+    } catch (error) {
+      console.error('Failed to detect speech:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Get speech segments from audio file
+   * Returns array of [start_time, end_time] in seconds
+   */
+  async getSpeechSegments(audioPath: string): Promise<Array<[number, number]>> {
+    if (!this.vad) {
+      throw new Error('VAD not initialized');
+    }
+
+    try {
+      const wave = sherpa.readWave(audioPath);
+
+      if (!wave || !wave.samples) {
+        throw new Error(`Failed to read audio file: ${audioPath}`);
+      }
+
+      const segments: Array<[number, number]> = [];
+      let speechStart: number | null = null;
+      const sampleRate = wave.sampleRate;
+
+      // Process audio in chunks
+      const chunkSize = 512; // Window size
+      for (let i = 0; i < wave.samples.length; i += chunkSize) {
+        const chunk = wave.samples.slice(i, Math.min(i + chunkSize, wave.samples.length));
+        this.vad.acceptWaveform({ sampleRate, samples: chunk });
+
+        const isSpeech = this.vad.isSpeech();
+
+        if (isSpeech && speechStart === null) {
+          // Speech started
+          speechStart = i / sampleRate;
+        } else if (!isSpeech && speechStart !== null) {
+          // Speech ended
+          segments.push([speechStart, i / sampleRate]);
+          speechStart = null;
+        }
+      }
+
+      // Handle case where speech continues to end
+      if (speechStart !== null) {
+        segments.push([speechStart, wave.samples.length / sampleRate]);
+      }
+
+      this.vad.flush();
+      return segments;
+    } catch (error) {
+      console.error('Failed to get speech segments:', error);
+      return [];
+    }
+  }
+
+  cleanup(): void {
+    if (this.vad) {
+      this.vad.free();
+      this.vad = null;
+    }
+  }
+}
+
 export class SherpaONNXManager {
   private recognizer: any = null;
   private speakerEmbedding: any = null;
