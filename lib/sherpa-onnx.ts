@@ -27,7 +27,8 @@ export class VADManager {
         debug: 0,
       };
 
-      this.vad = new sherpa.Vad(config);
+      // Second parameter is buffer size in seconds
+      this.vad = new sherpa.Vad(config, 30);
 
       if (!this.vad) {
         throw new Error('Failed to create VAD instance');
