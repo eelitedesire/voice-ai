@@ -38,5 +38,5 @@ elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
     fi
 fi
 
-# Run the command
-exec "$@"
+# Run the command directly (without exec) to preserve environment
+"$@"
