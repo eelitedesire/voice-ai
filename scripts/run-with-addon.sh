@@ -44,7 +44,7 @@ if [ "$1" = "tsx" ]; then
     shift
     # Call node directly with tsx loader instead of using the tsx wrapper script
     # This prevents macOS SIP from stripping DYLD_LIBRARY_PATH
-    node --import tsx/esm "$@"
+    node --import tsx "$@"
 else
     "$@"
 fi
