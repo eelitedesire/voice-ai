@@ -37,6 +37,9 @@ A simple web-based platform designed to assist in 2-person therapeutic sessions 
 
 ```bash
 npm install
+
+# Verify installation (optional but recommended)
+npm run verify
 ```
 
 2. **Download Sherpa-ONNX models**
@@ -63,17 +66,37 @@ GROQ_API_KEY=your_groq_api_key_here
 
 4. **Enroll speakers** (Phase A)
 
-Prepare two audio files:
+You have two options for enrolling speakers:
+
+**Option A: Interactive Recording (Recommended)**
+
+Record audio samples directly from your microphone:
+
+```bash
+# Install recording tool (one-time setup)
+# macOS:
+brew install sox
+
+# Linux:
+sudo apt-get install sox
+
+# Run enrollment (library paths are set automatically)
+npm run enroll
+```
+
+The script will guide you through recording both speakers interactively.
+
+**Option B: Use Existing Audio Files**
+
+If you already have audio files:
 - `therapist.wav` - Sample of therapist's voice (16kHz, mono, 5-10 seconds)
 - `client.wav` - Sample of client's voice (16kHz, mono, 5-10 seconds)
-
-Run enrollment:
 
 ```bash
 npm run enroll -- --therapist ./audio/therapist.wav --client ./audio/client.wav
 ```
 
-This creates `speaker_db.json` with voiceprints for speaker identification.
+Both options create `speaker_db.json` with voiceprints for speaker identification.
 
 5. **Start the development server**
 
@@ -217,15 +240,61 @@ model: groq('llama-3.3-70b-versatile') // Change model here
 
 ## Troubleshooting
 
+### Recording Tools Not Found
+
+If you get "No recording tool found" when running `npm run enroll`:
+
+```bash
+# macOS:
+brew install sox
+# or
+brew install ffmpeg
+
+# Linux (Ubuntu/Debian):
+sudo apt-get install sox
+# or
+sudo apt-get install ffmpeg
+
+# Linux (Fedora/RHEL):
+sudo dnf install sox
+# or
+sudo dnf install ffmpeg
+
+# Windows:
+# Download and install from:
+# https://sox.sourceforge.net/
+# or https://ffmpeg.org/
+```
+
 ### Microphone Access Denied
 
 Ensure your browser has permission to access the microphone. HTTPS is required for production deployments.
 
 ### Sherpa-ONNX Errors
 
+**"Could not find sherpa-onnx-node" on macOS:**
+
+If you see an error like "Could not find sherpa-onnx-node", the platform-specific native addon isn't installed:
+
+```bash
+# For macOS Apple Silicon (M1/M2/M3)
+npm install sherpa-onnx-darwin-arm64
+
+# For macOS Intel
+npm install sherpa-onnx-darwin-x64
+
+# Verify installation
+npm run check-addon
+```
+
+Note: `DYLD_LIBRARY_PATH` is set automatically by the npm scripts - you don't need to set it manually.
+
+**Other common issues:**
+
 1. Verify models are downloaded: `ls models/`
 2. Check model paths in `lib/sherpa-onnx.ts`
 3. Ensure `speaker_db.json` exists (run enrollment)
+4. On Linux, you may need to install `sherpa-onnx-linux-x64` or `sherpa-onnx-linux-arm64`
 
 ### Groq API Errors
 

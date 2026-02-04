@@ -9,43 +9,145 @@ echo "📦 Downloading Sherpa-ONNX Models..."
 
 # Create models directory
 mkdir -p models
-
-# Download a lightweight ASR model (example: Zipformer transducer)
-# Note: Adjust URLs based on actual Sherpa-ONNX model repository
-echo "Downloading ASR models..."
-MODEL_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-zipformer-en-2023-06-26.tar.bz2"
-
 cd models
 
-if [ ! -f "encoder.onnx" ]; then
-    echo "⬇️  Downloading Zipformer model..."
-    wget -q --show-progress "$MODEL_URL" -O model.tar.bz2
-    tar -xjf model.tar.bz2
-    mv sherpa-onnx-zipformer-en-2023-06-26/* .
-    rm -rf sherpa-onnx-zipformer-en-2023-06-26 model.tar.bz2
-    echo "✅ ASR models downloaded"
+echo ""
+echo "==================================================================="
+echo "Downloading ASR Models (Speech Recognition)"
+echo "==================================================================="
+
+# Download ASR model - Zipformer for English
+ASR_MODEL_NAME="sherpa-onnx-zipformer-en-2023-06-26"
+ASR_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/${ASR_MODEL_NAME}.tar.bz2"
+
+if [ ! -f "encoder-epoch-99-avg-1.onnx" ]; then
+    echo "⬇️  Downloading Zipformer ASR model..."
+    curl -SL -O "$ASR_URL"
+
+    echo "📦 Extracting ASR model..."
+    tar xf "${ASR_MODEL_NAME}.tar.bz2"
+
+    # Move files from subdirectory to models root
+    if [ -d "$ASR_MODEL_NAME" ]; then
+        mv "${ASR_MODEL_NAME}"/* .
+        rmdir "$ASR_MODEL_NAME"
+    fi
+
+    # Clean up tar file
+    rm -f "${ASR_MODEL_NAME}.tar.bz2"
+
+    echo "✅ ASR model downloaded and extracted"
 else
-    echo "✅ ASR models already exist"
+    echo "✅ ASR model already exists"
 fi
 
-# Download speaker embedding model
-echo "Downloading speaker embedding model..."
-SPEAKER_MODEL_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recognition-models/wespeaker_en_voxceleb_resnet34.onnx"
+# Create symlinks for easier access
+echo "🔗 Creating symlinks..."
+if [ -f "encoder-epoch-99-avg-1.onnx" ] && [ ! -L "encoder.onnx" ]; then
+    ln -sf encoder-epoch-99-avg-1.onnx encoder.onnx
+    echo "   ✅ encoder.onnx -> encoder-epoch-99-avg-1.onnx"
+fi
 
-if [ ! -f "speaker-embedding.onnx" ]; then
+if [ -f "decoder-epoch-99-avg-1.onnx" ] && [ ! -L "decoder.onnx" ]; then
+    ln -sf decoder-epoch-99-avg-1.onnx decoder.onnx
+    echo "   ✅ decoder.onnx -> decoder-epoch-99-avg-1.onnx"
+fi
+
+if [ -f "joiner-epoch-99-avg-1.onnx" ] && [ ! -L "joiner.onnx" ]; then
+    ln -sf joiner-epoch-99-avg-1.onnx joiner.onnx
+    echo "   ✅ joiner.onnx -> joiner-epoch-99-avg-1.onnx"
+fi
+
+echo ""
+echo "==================================================================="
+echo "Downloading Speaker Embedding Model"
+echo "==================================================================="
+
+# Download speaker embedding model - 3D-Speaker ERes2Net
+# Note: "speaker-recongition-models" has a typo in the actual release tag
+SPEAKER_MODEL="3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"
+SPEAKER_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/${SPEAKER_MODEL}"
+
+# Check if file exists and validate size
+if [ -f "$SPEAKER_MODEL" ]; then
+    FILE_SIZE=$(stat -f%z "$SPEAKER_MODEL" 2>/dev/null || stat -c%s "$SPEAKER_MODEL" 2>/dev/null)
+    if [ "$FILE_SIZE" -lt 10000000 ]; then
+        echo "⚠️  Existing $SPEAKER_MODEL is too small ($(($FILE_SIZE / 1024 / 1024)) MB)"
+        echo "    Expected: ~15MB. Re-downloading..."
+        rm -f "$SPEAKER_MODEL"
+    else
+        echo "✅ Speaker embedding model already exists ($(($FILE_SIZE / 1024 / 1024)) MB)"
+    fi
+fi
+
+if [ ! -f "$SPEAKER_MODEL" ]; then
     echo "⬇️  Downloading speaker embedding model..."
-    wget -q --show-progress "$SPEAKER_MODEL_URL" -O speaker-embedding.onnx
-    echo "✅ Speaker embedding model downloaded"
+    curl -SL -O "$SPEAKER_URL"
+
+    # Verify download
+    if [ -f "$SPEAKER_MODEL" ]; then
+        FILE_SIZE=$(stat -f%z "$SPEAKER_MODEL" 2>/dev/null || stat -c%s "$SPEAKER_MODEL" 2>/dev/null)
+        if [ "$FILE_SIZE" -lt 10000000 ]; then
+            echo "❌ Download failed - file too small ($(($FILE_SIZE / 1024 / 1024)) MB)"
+            rm -f "$SPEAKER_MODEL"
+            exit 1
+        fi
+        echo "✅ Speaker embedding model downloaded ($(($FILE_SIZE / 1024 / 1024)) MB)"
+    else
+        echo "❌ Download failed - file not created"
+        exit 1
+    fi
+fi
+
+# Create symlink for consistency
+if [ ! -L "speaker-embedding.onnx" ]; then
+    ln -sf "$SPEAKER_MODEL" speaker-embedding.onnx
+    echo "🔗 speaker-embedding.onnx -> $SPEAKER_MODEL"
+fi
+
+echo ""
+echo "==================================================================="
+echo "Downloading VAD Model (Voice Activity Detection)"
+echo "==================================================================="
+
+# Download VAD model - Silero VAD
+VAD_MODEL="silero_vad.onnx"
+VAD_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/${VAD_MODEL}"
+
+if [ ! -f "$VAD_MODEL" ]; then
+    echo "⬇️  Downloading VAD model..."
+    curl -SL -O "$VAD_URL"
+
+    # Verify download
+    if [ -f "$VAD_MODEL" ]; then
+        FILE_SIZE=$(stat -f%z "$VAD_MODEL" 2>/dev/null || stat -c%s "$VAD_MODEL" 2>/dev/null)
+        if [ "$FILE_SIZE" -lt 500000 ]; then
+            echo "❌ Download failed - file too small (expected ~600KB)"
+            rm -f "$VAD_MODEL"
+            exit 1
+        fi
+        echo "✅ VAD model downloaded ($(($FILE_SIZE / 1024)) KB)"
+    else
+        echo "❌ Download failed - file not created"
+        exit 1
+    fi
 else
-    echo "✅ Speaker embedding model already exists"
+    echo "✅ VAD model already exists"
 fi
 
 cd ..
 
 echo ""
-echo "🎉 All models downloaded successfully!"
+echo "==================================================================="
+echo "✅ All models downloaded successfully!"
+echo "==================================================================="
+echo ""
+echo "Models downloaded:"
+echo "  • ASR (Speech Recognition): Zipformer English"
+echo "  • Speaker Embedding: 3D-Speaker ERes2Net"
+echo "  • VAD: Silero VAD"
 echo ""
 echo "Next steps:"
-echo "  1. Prepare two .wav files (16kHz mono) - one for therapist, one for client"
-echo "  2. Run enrollment: npm run enroll -- --therapist <path> --client <path>"
+echo "  1. Verify setup: npm run verify"
+echo "  2. Enroll speakers: npm run enroll"
 echo ""

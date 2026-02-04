@@ -7,8 +7,10 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "enroll": "tsx scripts/enroll-speakers.ts",
-    "download-models": "bash scripts/download-models.sh"
+    "enroll": "bash scripts/run-with-addon.sh tsx scripts/enroll-speakers.ts",
+    "download-models": "bash scripts/download-models.sh",
+    "verify": "tsx scripts/verify-setup.ts",
+    "check-addon": "bash scripts/run-with-addon.sh tsx scripts/check-addon.ts"
   },
   "dependencies": {
     "next": "^15.1.6",
@@ -18,12 +20,15 @@
     "@ai-sdk/groq": "^1.0.8",
     "groq-sdk": "^0.8.0",
     "sherpa-onnx-node": "^1.10.30",
-    "zod": "^3.24.1"
+    "zod": "^3.24.1",
+    "node-record-lpcm16": "^1.0.1",
+    "wav": "^1.0.2"
   },
   "devDependencies": {
     "@types/node": "^22",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@types/wav": "^1.0.5",
     "typescript": "^5",
     "eslint": "^9",
     "eslint-config-next": "^15.1.6",
@@ -31,5 +36,12 @@
     "postcss": "^8",
     "autoprefixer": "^10.4.20",
     "tsx": "^4.19.2"
+  },
+  "optionalDependencies": {
+    "sherpa-onnx-darwin-arm64": "^1.10.30",
+    "sherpa-onnx-darwin-x64": "^1.10.30",
+    "sherpa-onnx-linux-x64": "^1.10.30",
+    "sherpa-onnx-linux-arm64": "^1.10.30",
+    "sherpa-onnx-win32-x64": "^1.10.30"
   }
 }
