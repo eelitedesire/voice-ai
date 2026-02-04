@@ -15,8 +15,12 @@ export class SherpaONNXManager {
 
   async initializeRecognizer(): Promise<void> {
     try {
-      // Initialize speech recognition (ASR)
+      // Initialize speech recognition (ASR) using OnlineRecognizer
       const config = {
+        featConfig: {
+          sampleRate: 16000,
+          featureDim: 80,
+        },
         modelConfig: {
           transducer: {
             encoder: path.join(this.modelPath, 'encoder.onnx'),
@@ -24,13 +28,13 @@ export class SherpaONNXManager {
             joiner: path.join(this.modelPath, 'joiner.onnx'),
           },
           tokens: path.join(this.modelPath, 'tokens.txt'),
-          sampleRate: 16000,
+          numThreads: 2,
+          provider: 'cpu',
+          debug: 0,
         },
       };
 
-      // Note: Actual Sherpa-ONNX initialization
-      // This is a simplified version - adjust based on actual sherpa-onnx-node API
-      this.recognizer = sherpa.createRecognizer(config);
+      this.recognizer = new sherpa.OnlineRecognizer(config);
     } catch (error) {
       console.error('Failed to initialize Sherpa-ONNX recognizer:', error);
       throw error;
@@ -42,10 +46,18 @@ export class SherpaONNXManager {
       // Initialize speaker embedding model for speaker ID
       const config = {
         model: path.join(this.modelPath, 'speaker-embedding.onnx'),
-        sampleRate: 16000,
+        numThreads: 1,
+        debug: 0,
+        provider: 'cpu',
       };
 
-      this.speakerEmbedding = sherpa.createSpeakerEmbedding(config);
+      this.speakerEmbedding = new sherpa.SpeakerEmbeddingExtractor(config);
+
+      if (!this.speakerEmbedding) {
+        throw new Error('Failed to create speaker embedding extractor');
+      }
+
+      console.log(`Speaker embedding extractor created. Dimension: ${this.speakerEmbedding.dim}`);
     } catch (error) {
       console.error('Failed to initialize speaker embedding:', error);
       throw error;
@@ -84,12 +96,43 @@ export class SherpaONNXManager {
     }
 
     try {
-      // Read audio file
-      const audioData = await fs.promises.readFile(audioPath);
+      // Read audio file using sherpa-onnx's readWave function
+      const wave = sherpa.readWave(audioPath);
 
-      // Extract embedding (voiceprint)
-      // Note: Simplified - actual implementation depends on sherpa-onnx-node API
-      const embedding = this.speakerEmbedding.compute(audioData);
+      if (!wave || !wave.samples) {
+        throw new Error(`Failed to read audio file: ${audioPath}`);
+      }
+
+      // Create a stream for the speaker embedding
+      const stream = this.speakerEmbedding.createStream();
+
+      if (!stream) {
+        throw new Error('Failed to create speaker embedding stream');
+      }
+
+      // Accept waveform
+      stream.acceptWaveform({
+        sampleRate: wave.sampleRate,
+        samples: wave.samples,
+      });
+
+      // Input is finished
+      stream.inputFinished();
+
+      // Check if stream is ready
+      if (!this.speakerEmbedding.isReady(stream)) {
+        throw new Error('Speaker embedding stream is not ready');
+      }
+
+      // Compute embedding
+      const embedding = this.speakerEmbedding.compute(stream);
+
+      if (!embedding || embedding.length === 0) {
+        throw new Error('Failed to compute speaker embedding');
+      }
+
+      // Free the stream
+      stream.free();
 
       return Array.from(embedding);
     } catch (error) {
@@ -165,9 +208,32 @@ export class SherpaONNXManager {
     }
 
     try {
-      // Process audio buffer with Sherpa-ONNX
-      // Note: Simplified - actual implementation depends on sherpa-onnx-node API
-      const result = this.recognizer.acceptWaveform(audioBuffer);
+      // Create a stream for recognition
+      const stream = this.recognizer.createStream();
+
+      // Accept waveform
+      stream.acceptWaveform({
+        sampleRate: 16000,
+        samples: audioBuffer,
+      });
+
+      // Add tail padding for better recognition
+      const tailPadding = new Float32Array(16000 * 0.4); // 0.4 seconds
+      stream.acceptWaveform({
+        samples: tailPadding,
+        sampleRate: 16000,
+      });
+
+      // Decode
+      while (this.recognizer.isReady(stream)) {
+        this.recognizer.decode(stream);
+      }
+
+      const result = this.recognizer.getResult(stream);
+
+      // Free the stream
+      stream.free();
+
       return result.text || '';
     } catch (error) {
       console.error('Failed to transcribe audio:', error);
