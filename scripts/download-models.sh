@@ -63,16 +63,17 @@ echo "==================================================================="
 echo "Downloading Speaker Embedding Model"
 echo "==================================================================="
 
-# Download speaker embedding model - WeSpeaker ResNet34
-SPEAKER_MODEL="wespeaker_en_voxceleb_resnet34.onnx"
-SPEAKER_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recognition-models/${SPEAKER_MODEL}"
+# Download speaker embedding model - 3D-Speaker ERes2Net
+# Note: "speaker-recongition-models" has a typo in the actual release tag
+SPEAKER_MODEL="3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"
+SPEAKER_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/${SPEAKER_MODEL}"
 
 # Check if file exists and validate size
 if [ -f "$SPEAKER_MODEL" ]; then
     FILE_SIZE=$(stat -f%z "$SPEAKER_MODEL" 2>/dev/null || stat -c%s "$SPEAKER_MODEL" 2>/dev/null)
-    if [ "$FILE_SIZE" -lt 30000000 ]; then
+    if [ "$FILE_SIZE" -lt 10000000 ]; then
         echo "⚠️  Existing $SPEAKER_MODEL is too small ($(($FILE_SIZE / 1024 / 1024)) MB)"
-        echo "    Expected: ~40MB. Re-downloading..."
+        echo "    Expected: ~15MB. Re-downloading..."
         rm -f "$SPEAKER_MODEL"
     else
         echo "✅ Speaker embedding model already exists ($(($FILE_SIZE / 1024 / 1024)) MB)"
@@ -86,7 +87,7 @@ if [ ! -f "$SPEAKER_MODEL" ]; then
     # Verify download
     if [ -f "$SPEAKER_MODEL" ]; then
         FILE_SIZE=$(stat -f%z "$SPEAKER_MODEL" 2>/dev/null || stat -c%s "$SPEAKER_MODEL" 2>/dev/null)
-        if [ "$FILE_SIZE" -lt 30000000 ]; then
+        if [ "$FILE_SIZE" -lt 10000000 ]; then
             echo "❌ Download failed - file too small ($(($FILE_SIZE / 1024 / 1024)) MB)"
             rm -f "$SPEAKER_MODEL"
             exit 1
@@ -143,7 +144,7 @@ echo "==================================================================="
 echo ""
 echo "Models downloaded:"
 echo "  • ASR (Speech Recognition): Zipformer English"
-echo "  • Speaker Embedding: WeSpeaker ResNet34"
+echo "  • Speaker Embedding: 3D-Speaker ERes2Net"
 echo "  • VAD: Silero VAD"
 echo ""
 echo "Next steps:"
