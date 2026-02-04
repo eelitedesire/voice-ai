@@ -87,7 +87,9 @@ export class AudioRecorder {
       console.log(`Recording for ${duration} seconds...`);
 
       let recordingStarted = false;
-      const proc = spawn('rec', args);
+      const proc = spawn('rec', args, {
+        stdio: ['pipe', 'pipe', 'pipe'] // stdin, stdout, stderr
+      });
 
       // Close stdin to signal no more input will be provided
       if (proc.stdin) {
@@ -179,7 +181,9 @@ export class AudioRecorder {
       console.log(`Recording for ${duration} seconds...`);
       console.log('🔴 Recording started! Speak now...');
 
-      const proc = spawn('ffmpeg', args);
+      const proc = spawn('ffmpeg', args, {
+        stdio: ['pipe', 'pipe', 'pipe'] // stdin, stdout, stderr
+      });
 
       // Close stdin to signal no more input will be provided
       if (proc.stdin) {
