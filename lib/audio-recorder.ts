@@ -89,6 +89,12 @@ export class AudioRecorder {
       let recordingStarted = false;
       const proc = spawn('rec', args);
 
+      // Consume stdout to prevent buffer from filling up
+      proc.stdout.on('data', () => {
+        // Just consume the data, no need to process it
+      });
+
+      // Consume stderr and look for recording status
       proc.stderr.on('data', (data) => {
         const output = data.toString();
         if (output.includes('Recording') && !recordingStarted) {
@@ -149,6 +155,16 @@ export class AudioRecorder {
       console.log('🔴 Recording started! Speak now...');
 
       const proc = spawn('ffmpeg', args);
+
+      // Consume stdout to prevent buffer from filling up
+      proc.stdout.on('data', () => {
+        // Just consume the data, no need to process it
+      });
+
+      // Consume stderr to prevent buffer from filling up
+      proc.stderr.on('data', () => {
+        // Just consume the data, no need to process it
+      });
 
       proc.on('close', (code) => {
         if (code === 0) {
