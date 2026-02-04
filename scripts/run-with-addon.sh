@@ -15,7 +15,13 @@ if [[ "$OSTYPE" == "darwin"* ]]; then
     else
         PLATFORM_PKG="sherpa-onnx-darwin-x64"
     fi
-    LIBRARY_PATH_VAR="DYLD_LIBRARY_PATH"
+
+    # Set DYLD_LIBRARY_PATH for macOS
+    ADDON_PATH="$PROJECT_ROOT/node_modules/$PLATFORM_PKG"
+    if [ -d "$ADDON_PATH" ]; then
+        export DYLD_LIBRARY_PATH="$ADDON_PATH:$DYLD_LIBRARY_PATH"
+    fi
+
 elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
     # Linux
     ARCH=$(uname -m)
@@ -24,19 +30,12 @@ elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
     else
         PLATFORM_PKG="sherpa-onnx-linux-x64"
     fi
-    LIBRARY_PATH_VAR="LD_LIBRARY_PATH"
-else
-    # Windows or other - just run without setting path
-    exec "$@"
-    exit $?
-fi
 
-# Set the library path
-ADDON_PATH="$PROJECT_ROOT/node_modules/$PLATFORM_PKG"
-
-if [ -d "$ADDON_PATH" ]; then
-    export $LIBRARY_PATH_VAR="$ADDON_PATH:${!LIBRARY_PATH_VAR}"
-    # echo "Set $LIBRARY_PATH_VAR=$ADDON_PATH" >&2
+    # Set LD_LIBRARY_PATH for Linux
+    ADDON_PATH="$PROJECT_ROOT/node_modules/$PLATFORM_PKG"
+    if [ -d "$ADDON_PATH" ]; then
+        export LD_LIBRARY_PATH="$ADDON_PATH:$LD_LIBRARY_PATH"
+    fi
 fi
 
 # Run the command
