@@ -135,7 +135,7 @@ if (fs.existsSync(modelsPath)) {
     { name: 'joiner.onnx', minSize: 500 * 1024 },        // ~500KB minimum
     { name: 'tokens.txt', minSize: 1000 },               // ~1KB minimum
     { name: 'speaker-embedding.onnx', minSize: 10 * 1024 * 1024 }, // ~15MB (3D-Speaker)
-    { name: 'silero_vad.onnx', minSize: 1 * 1024 * 1024 }, // ~1MB minimum (VAD)
+    { name: 'silero_vad.onnx', minSize: 500 * 1024 }, // ~600KB (VAD)
   ];
 
   requiredModels.forEach(model => {

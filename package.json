@@ -9,7 +9,8 @@
     "lint": "next lint",
     "enroll": "tsx scripts/enroll-speakers.ts",
     "download-models": "bash scripts/download-models.sh",
-    "verify": "tsx scripts/verify-setup.ts"
+    "verify": "tsx scripts/verify-setup.ts",
+    "check-addon": "tsx scripts/check-addon.ts"
   },
   "dependencies": {
     "next": "^15.1.6",

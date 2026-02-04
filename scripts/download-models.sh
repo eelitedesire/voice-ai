@@ -121,8 +121,8 @@ if [ ! -f "$VAD_MODEL" ]; then
     # Verify download
     if [ -f "$VAD_MODEL" ]; then
         FILE_SIZE=$(stat -f%z "$VAD_MODEL" 2>/dev/null || stat -c%s "$VAD_MODEL" 2>/dev/null)
-        if [ "$FILE_SIZE" -lt 100000 ]; then
-            echo "❌ Download failed - file too small"
+        if [ "$FILE_SIZE" -lt 500000 ]; then
+            echo "❌ Download failed - file too small (expected ~600KB)"
             rm -f "$VAD_MODEL"
             exit 1
         fi
