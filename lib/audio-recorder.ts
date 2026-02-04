@@ -89,6 +89,11 @@ export class AudioRecorder {
       let recordingStarted = false;
       const proc = spawn('rec', args);
 
+      // Close stdin to signal no more input will be provided
+      if (proc.stdin) {
+        proc.stdin.end();
+      }
+
       // Consume stdout to prevent buffer from filling up
       proc.stdout.on('data', () => {
         // Just consume the data, no need to process it
@@ -103,17 +108,37 @@ export class AudioRecorder {
         }
       });
 
+      let completed = false;
+
+      proc.on('exit', (code) => {
+        if (!completed) {
+          completed = true;
+          if (code === 0) {
+            console.log('✅ Recording complete!');
+            resolve();
+          } else {
+            reject(new Error(`Recording failed with exit code ${code}`));
+          }
+        }
+      });
+
       proc.on('close', (code) => {
-        if (code === 0) {
-          console.log('✅ Recording complete!');
-          resolve();
-        } else {
-          reject(new Error(`Recording failed with code ${code}`));
+        if (!completed) {
+          completed = true;
+          if (code === 0) {
+            console.log('✅ Recording complete!');
+            resolve();
+          } else {
+            reject(new Error(`Recording failed with code ${code}`));
+          }
         }
       });
 
       proc.on('error', (err) => {
-        reject(new Error(`Failed to start recording: ${err.message}`));
+        if (!completed) {
+          completed = true;
+          reject(new Error(`Failed to start recording: ${err.message}`));
+        }
       });
     });
   }
@@ -156,6 +181,11 @@ export class AudioRecorder {
 
       const proc = spawn('ffmpeg', args);
 
+      // Close stdin to signal no more input will be provided
+      if (proc.stdin) {
+        proc.stdin.end();
+      }
+
       // Consume stdout to prevent buffer from filling up
       proc.stdout.on('data', () => {
         // Just consume the data, no need to process it
@@ -166,17 +196,37 @@ export class AudioRecorder {
         // Just consume the data, no need to process it
       });
 
+      let completed = false;
+
+      proc.on('exit', (code) => {
+        if (!completed) {
+          completed = true;
+          if (code === 0) {
+            console.log('✅ Recording complete!');
+            resolve();
+          } else {
+            reject(new Error(`Recording failed with exit code ${code}`));
+          }
+        }
+      });
+
       proc.on('close', (code) => {
-        if (code === 0) {
-          console.log('✅ Recording complete!');
-          resolve();
-        } else {
-          reject(new Error(`Recording failed with code ${code}`));
+        if (!completed) {
+          completed = true;
+          if (code === 0) {
+            console.log('✅ Recording complete!');
+            resolve();
+          } else {
+            reject(new Error(`Recording failed with code ${code}`));
+          }
         }
       });
 
       proc.on('error', (err) => {
-        reject(new Error(`Failed to start recording: ${err.message}`));
+        if (!completed) {
+          completed = true;
+          reject(new Error(`Failed to start recording: ${err.message}`));
+        }
       });
     });
   }
