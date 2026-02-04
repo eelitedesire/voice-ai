@@ -276,7 +276,7 @@ export class SherpaONNXManager {
 
   async enrollSpeaker(
     speakerId: string,
-    role: 'Therapist' | 'Client',
+    role: 'Client 1' | 'Client 2',
     audioPath: string
   ): Promise<void> {
     if (!this.speakerDatabase) {

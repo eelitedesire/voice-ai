@@ -54,18 +54,18 @@ export async function POST(request: NextRequest) {
       // In production, implement actual Sherpa-ONNX processing
       const transcript: TranscriptEntry[] = [
         {
-          speaker: 'Therapist',
-          text: 'How have you been feeling this week?',
+          speaker: 'Client 1',
+          text: 'I feel like we need to talk about our communication issues.',
           timestamp: Date.now() - 5000,
         },
         {
-          speaker: 'Client',
-          text: "I've been struggling with anxiety, especially in the mornings.",
+          speaker: 'Client 2',
+          text: "I agree. I've been feeling disconnected from you lately.",
           timestamp: Date.now() - 3000,
         },
         {
-          speaker: 'Therapist',
-          text: 'Can you tell me more about what triggers this anxiety?',
+          speaker: 'Client 1',
+          text: 'Can you tell me more about what makes you feel that way?',
           timestamp: Date.now() - 1000,
         },
       ];

@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
 /**
- * Voice Enrollment Script
+ * Voice Enrollment Script for Couple Therapy
  *
- * This script processes two audio samples (one for therapist, one for client)
+ * This script processes two audio samples (one for each client)
  * and generates a speaker_db.json file with voiceprints for speaker identification.
  *
  * Usage:
@@ -12,7 +12,7 @@
  *     npm run enroll -- --record
  *
  *   File mode (use existing .wav files):
- *     npm run enroll -- --therapist ./audio/therapist.wav --client ./audio/client.wav
+ *     npm run enroll -- --client1 ./audio/client1.wav --client2 ./audio/client2.wav
  *
  * Requirements:
  *   - Sherpa-ONNX models must be downloaded to ./models/
@@ -26,8 +26,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 interface EnrollmentArgs {
-  therapist?: string;
-  client?: string;
+  client1?: string;
+  client2?: string;
   output?: string;
   record?: boolean;
 }
@@ -37,11 +37,11 @@ function parseArgs(): EnrollmentArgs {
   const cliArgs = process.argv.slice(2);
 
   for (let i = 0; i < cliArgs.length; i++) {
-    if (cliArgs[i] === '--therapist' && cliArgs[i + 1]) {
-      args.therapist = cliArgs[i + 1];
+    if (cliArgs[i] === '--client1' && cliArgs[i + 1]) {
+      args.client1 = cliArgs[i + 1];
       i++;
-    } else if (cliArgs[i] === '--client' && cliArgs[i + 1]) {
-      args.client = cliArgs[i + 1];
+    } else if (cliArgs[i] === '--client2' && cliArgs[i + 1]) {
+      args.client2 = cliArgs[i + 1];
       i++;
     } else if (cliArgs[i] === '--output' && cliArgs[i + 1]) {
       args.output = cliArgs[i + 1];
@@ -55,14 +55,14 @@ function parseArgs(): EnrollmentArgs {
 }
 
 async function main() {
-  console.log('🎙️  Voice Enrollment System\n');
+  console.log('🎙️  Voice Enrollment System for Couple Therapy\n');
 
   const args = parseArgs();
-  let therapistPath = args.therapist;
-  let clientPath = args.client;
+  let client1Path = args.client1;
+  let client2Path = args.client2;
 
   // Determine mode: interactive recording or file-based
-  const useRecording = args.record || (!args.therapist && !args.client);
+  const useRecording = args.record || (!args.client1 && !args.client2);
 
   if (useRecording) {
     // Interactive recording mode
@@ -71,8 +71,8 @@ async function main() {
     try {
       const recorder = new AudioRecorder();
       const recordings = await recorder.recordBoth();
-      therapistPath = recordings.therapist;
-      clientPath = recordings.client;
+      client1Path = recordings.client1;
+      client2Path = recordings.client2;
     } catch (error) {
       console.error('❌ Recording failed:', error);
       process.exit(1);
@@ -81,30 +81,30 @@ async function main() {
     // File-based mode
     console.log('📍 Mode: Using Existing Audio Files\n');
 
-    if (!therapistPath || !clientPath) {
-      console.error('❌ Error: Both --therapist and --client audio files are required\n');
+    if (!client1Path || !client2Path) {
+      console.error('❌ Error: Both --client1 and --client2 audio files are required\n');
       console.log('Usage:');
       console.log('  Interactive mode (record from microphone):');
       console.log('    npm run enroll');
       console.log('    npm run enroll -- --record\n');
       console.log('  File mode (use existing .wav files):');
-      console.log('    npm run enroll -- --therapist ./audio/therapist.wav --client ./audio/client.wav\n');
+      console.log('    npm run enroll -- --client1 ./audio/client1.wav --client2 ./audio/client2.wav\n');
       console.log('Options:');
-      console.log('  --therapist <path>  Path to therapist audio file (.wav)');
-      console.log('  --client <path>     Path to client audio file (.wav)');
+      console.log('  --client1 <path>    Path to Client 1 audio file (.wav)');
+      console.log('  --client2 <path>    Path to Client 2 audio file (.wav)');
       console.log('  --output <path>     Output path for speaker_db.json (default: ./speaker_db.json)');
       console.log('  --record, -r        Record audio interactively');
       process.exit(1);
     }
 
     // Verify files exist
-    if (!fs.existsSync(therapistPath)) {
-      console.error(`❌ Therapist audio file not found: ${therapistPath}`);
+    if (!fs.existsSync(client1Path)) {
+      console.error(`❌ Client 1 audio file not found: ${client1Path}`);
       process.exit(1);
     }
 
-    if (!fs.existsSync(clientPath)) {
-      console.error(`❌ Client audio file not found: ${clientPath}`);
+    if (!fs.existsSync(client2Path)) {
+      console.error(`❌ Client 2 audio file not found: ${client2Path}`);
       process.exit(1);
     }
   }
@@ -112,8 +112,8 @@ async function main() {
   const outputPath = args.output || './speaker_db.json';
 
   console.log('📋 Configuration:');
-  console.log(`   Therapist audio: ${therapistPath}`);
-  console.log(`   Client audio: ${clientPath}`);
+  console.log(`   Client 1 audio: ${client1Path}`);
+  console.log(`   Client 2 audio: ${client2Path}`);
   console.log(`   Output database: ${outputPath}\n`);
 
   try {
@@ -130,35 +130,35 @@ async function main() {
     // Validate recordings contain speech
     console.log('🔍 Validating audio quality with VAD...');
 
-    const therapistHasSpeech = await vad.hasSpeech(therapistPath);
-    if (!therapistHasSpeech) {
-      console.error('❌ Therapist audio does not contain detectable speech!');
+    const client1HasSpeech = await vad.hasSpeech(client1Path);
+    if (!client1HasSpeech) {
+      console.error('❌ Client 1 audio does not contain detectable speech!');
       console.error('   Please ensure the recording has clear audio.');
       vad.cleanup();
       sherpa.cleanup();
       process.exit(1);
     }
-    console.log('✅ Therapist audio validated');
+    console.log('✅ Client 1 audio validated');
 
-    const clientHasSpeech = await vad.hasSpeech(clientPath);
-    if (!clientHasSpeech) {
-      console.error('❌ Client audio does not contain detectable speech!');
+    const client2HasSpeech = await vad.hasSpeech(client2Path);
+    if (!client2HasSpeech) {
+      console.error('❌ Client 2 audio does not contain detectable speech!');
       console.error('   Please ensure the recording has clear audio.');
       vad.cleanup();
       sherpa.cleanup();
       process.exit(1);
     }
-    console.log('✅ Client audio validated\n');
+    console.log('✅ Client 2 audio validated\n');
 
-    // Enroll therapist
-    console.log('🎤 Processing therapist voice...');
-    await sherpa.enrollSpeaker('therapist', 'Therapist', therapistPath);
-    console.log('✅ Therapist enrolled\n');
+    // Enroll client 1
+    console.log('🎤 Processing Client 1 voice...');
+    await sherpa.enrollSpeaker('client1', 'Client 1', client1Path);
+    console.log('✅ Client 1 enrolled\n');
 
-    // Enroll client
-    console.log('🎤 Processing client voice...');
-    await sherpa.enrollSpeaker('client', 'Client', clientPath);
-    console.log('✅ Client enrolled\n');
+    // Enroll client 2
+    console.log('🎤 Processing Client 2 voice...');
+    await sherpa.enrollSpeaker('client2', 'Client 2', client2Path);
+    console.log('✅ Client 2 enrolled\n');
 
     // Save database
     console.log('💾 Saving speaker database...');
