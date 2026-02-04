@@ -9,7 +9,6 @@
     "lint": "next lint",
     "enroll": "tsx scripts/enroll-speakers.ts",
     "download-models": "bash scripts/download-models.sh",
-    "fix-models": "bash scripts/fix-models.sh",
     "verify": "tsx scripts/verify-setup.ts"
   },
   "dependencies": {
