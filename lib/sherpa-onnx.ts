@@ -159,7 +159,8 @@ export class SherpaONNXManager {
 
   async initializeRecognizer(): Promise<void> {
     try {
-      // Initialize speech recognition (ASR) using OnlineRecognizer
+      // Initialize speech recognition (ASR) using OfflineRecognizer
+      // OfflineRecognizer is designed for processing complete audio segments
       const config = {
         featConfig: {
           sampleRate: 16000,
@@ -178,7 +179,7 @@ export class SherpaONNXManager {
         },
       };
 
-      this.recognizer = new sherpa.OnlineRecognizer(config);
+      this.recognizer = new sherpa.OfflineRecognizer(config);
     } catch (error) {
       console.error('Failed to initialize Sherpa-ONNX recognizer:', error);
       throw error;
@@ -351,30 +352,19 @@ export class SherpaONNXManager {
     }
 
     try {
-      // Create a stream for recognition
+      // Create a stream for OfflineRecognizer
       const stream = this.recognizer.createStream();
 
-      // Accept waveform
+      // Accept waveform (OfflineRecognizer processes complete segments)
       stream.acceptWaveform({
-        sampleRate: 16000,
         samples: audioBuffer,
-      });
-
-      // Add tail padding for better recognition
-      const tailPadding = new Float32Array(16000 * 0.4); // 0.4 seconds
-      stream.acceptWaveform({
-        samples: tailPadding,
         sampleRate: 16000,
       });
 
-      // Signal that we're done feeding audio
-      stream.inputFinished();
+      // Decode once (OfflineRecognizer doesn't need a loop)
+      this.recognizer.decode(stream);
 
-      // Decode
-      while (this.recognizer.isReady(stream)) {
-        this.recognizer.decode(stream);
-      }
-
+      // Get the result
       const result = this.recognizer.getResult(stream);
 
       // Stream cleanup - no free() method needed, will be garbage collected
