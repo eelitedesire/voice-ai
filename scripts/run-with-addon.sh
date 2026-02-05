@@ -39,12 +39,17 @@ elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
 fi
 
 # Run the command
-# Special handling for tsx to avoid SIP stripping DYLD_LIBRARY_PATH
+# Special handling for tsx and next to avoid SIP stripping DYLD_LIBRARY_PATH
 if [ "$1" = "tsx" ]; then
     shift
     # Call node directly with tsx loader instead of using the tsx wrapper script
     # This prevents macOS SIP from stripping DYLD_LIBRARY_PATH
     node --import tsx "$@"
+elif [ "$1" = "next" ]; then
+    shift
+    # Call node directly with next CLI instead of using the next wrapper script
+    # This prevents macOS SIP from stripping DYLD_LIBRARY_PATH
+    node "$PROJECT_ROOT/node_modules/.bin/next" "$@"
 else
     "$@"
 fi
