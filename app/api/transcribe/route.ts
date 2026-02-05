@@ -162,6 +162,12 @@ export async function POST(request: NextRequest) {
         const voiceprint = await sherpaManager.extractVoiceprint(segmentPath);
         const speakerRole = await sherpaManager.identifySpeaker(voiceprint);
 
+        // Try transcribing the entire audio file instead of just the segment
+        // OnlineRecognizer might need more context
+        console.log('Attempting full audio transcription for comparison...');
+        const fullText = await sherpaManager.transcribeAudio(samples);
+        console.log('Full audio transcription:', fullText || '(empty)');
+
         // Transcribe the segment
         const text = await sherpaManager.transcribeAudio(processedSamples);
 
@@ -175,6 +181,16 @@ export async function POST(request: NextRequest) {
           console.log(`Segment ${i + 1}: [${speakerRole || 'Unknown'}] "${text.trim()}"`);
         } else {
           console.log(`Segment ${i + 1}: No text transcribed`);
+
+          // If segment transcription failed but full audio worked, use that
+          if (fullText && fullText.trim().length > 0) {
+            transcript.push({
+              speaker: speakerRole || 'Client 1',
+              text: fullText.trim(),
+              timestamp: recordingStartTime + Math.floor(segmentStart * 1000),
+            });
+            console.log(`Segment ${i + 1}: Using full audio transcription: "${fullText.trim()}"`);
+          }
         }
       } catch (error) {
         console.error(`Error processing segment ${i + 1}:`, error);
