@@ -9,7 +9,9 @@ let sherpaManager: SherpaONNXManager | null = null;
 
 async function initializeSherpa() {
   if (!sherpaManager) {
-    sherpaManager = new SherpaONNXManager('./models');
+    // Use absolute path from project root for Next.js API routes
+    const modelsPath = path.join(process.cwd(), 'models');
+    sherpaManager = new SherpaONNXManager(modelsPath);
     await sherpaManager.initializeRecognizer();
     await sherpaManager.initializeSpeakerEmbedding();
 
