@@ -358,6 +358,9 @@ export class SherpaONNXManager {
         sampleRate: 16000,
       });
 
+      // Signal that we're done feeding audio
+      stream.inputFinished();
+
       // Decode
       while (this.recognizer.isReady(stream)) {
         this.recognizer.decode(stream);
