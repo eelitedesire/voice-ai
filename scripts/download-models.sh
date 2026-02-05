@@ -22,7 +22,7 @@ echo "==================================================================="
 ASR_MODEL_NAME="sherpa-onnx-streaming-zipformer-en-2023-06-26"
 ASR_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/${ASR_MODEL_NAME}.tar.bz2"
 
-if [ ! -f "encoder-epoch-99-avg-1.int8.onnx" ]; then
+if [ ! -f "encoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx" ]; then
     echo "⬇️  Downloading Streaming Zipformer ASR model..."
     curl -SL -O "$ASR_URL"
 
@@ -46,19 +46,19 @@ fi
 # Create symlinks for easier access
 # Note: Using int8 quantized models for better performance
 echo "🔗 Creating symlinks..."
-if [ -f "encoder-epoch-99-avg-1.int8.onnx" ] && [ ! -L "encoder.onnx" ]; then
-    ln -sf encoder-epoch-99-avg-1.int8.onnx encoder.onnx
-    echo "   ✅ encoder.onnx -> encoder-epoch-99-avg-1.int8.onnx"
+if [ -f "encoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx" ] && [ ! -L "encoder.onnx" ]; then
+    ln -sf encoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx encoder.onnx
+    echo "   ✅ encoder.onnx -> encoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx"
 fi
 
-if [ -f "decoder-epoch-99-avg-1.int8.onnx" ] && [ ! -L "decoder.onnx" ]; then
-    ln -sf decoder-epoch-99-avg-1.int8.onnx decoder.onnx
-    echo "   ✅ decoder.onnx -> decoder-epoch-99-avg-1.int8.onnx"
+if [ -f "decoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx" ] && [ ! -L "decoder.onnx" ]; then
+    ln -sf decoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx decoder.onnx
+    echo "   ✅ decoder.onnx -> decoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx"
 fi
 
-if [ -f "joiner-epoch-99-avg-1.int8.onnx" ] && [ ! -L "joiner.onnx" ]; then
-    ln -sf joiner-epoch-99-avg-1.int8.onnx joiner.onnx
-    echo "   ✅ joiner.onnx -> joiner-epoch-99-avg-1.int8.onnx"
+if [ -f "joiner-epoch-99-avg-1-chunk-16-left-128.int8.onnx" ] && [ ! -L "joiner.onnx" ]; then
+    ln -sf joiner-epoch-99-avg-1-chunk-16-left-128.int8.onnx joiner.onnx
+    echo "   ✅ joiner.onnx -> joiner-epoch-99-avg-1-chunk-16-left-128.int8.onnx"
 fi
 
 echo ""
