@@ -356,9 +356,26 @@ export class SherpaONNXManager {
       // Create a stream for OnlineRecognizer
       const stream = this.recognizer.createStream();
 
+      // Add leading silence for left context (model needs ~128 frames of context)
+      // At 10ms frame shift, 128 frames = 1.28s
+      const leadingSilence = new Float32Array(16000 * 1.5); // 1.5s of silence
+
+      // Add trailing silence to ensure complete decoding
+      const trailingSilence = new Float32Array(16000 * 0.5); // 0.5s of silence
+
+      // Combine: leading silence + audio + trailing silence
+      const paddedBuffer = new Float32Array(
+        leadingSilence.length + audioBuffer.length + trailingSilence.length
+      );
+      paddedBuffer.set(leadingSilence, 0);
+      paddedBuffer.set(audioBuffer, leadingSilence.length);
+      paddedBuffer.set(trailingSilence, leadingSilence.length + audioBuffer.length);
+
+      console.log(`Transcription input: ${audioBuffer.length} samples + ${leadingSilence.length + trailingSilence.length} padding = ${paddedBuffer.length} total`);
+
       // Accept waveform (feed all audio at once for a complete segment)
       stream.acceptWaveform({
-        samples: audioBuffer,
+        samples: paddedBuffer,
         sampleRate: 16000,
       });
 
