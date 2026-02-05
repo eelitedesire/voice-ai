@@ -88,7 +88,11 @@ export async function POST(request: NextRequest) {
 
     // Initialize Sherpa-ONNX and VAD
     const sherpaManager = await initializeSherpa();
-    const vad = await initializeVAD();
+
+    // Create a fresh VAD instance for each request to avoid state accumulation
+    const modelsPath = path.join(process.cwd(), 'models');
+    const vad = new VADManager(modelsPath);
+    await vad.initialize();
 
     // Read the WAV file
     const wave = sherpa.readWave(tempWavPath);
@@ -179,6 +183,12 @@ export async function POST(request: NextRequest) {
     }
 
     console.log(`Transcription complete: ${transcript.length} entries`);
+
+    // Cleanup VAD instance
+    if (vad) {
+      vad.cleanup();
+    }
+
     return NextResponse.json({ transcript });
 
   } catch (error) {

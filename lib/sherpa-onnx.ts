@@ -16,8 +16,8 @@ export class VADManager {
       const config = {
         sileroVad: {
           model: path.join(this.modelPath, 'silero_vad.onnx'),
-          minSilenceDuration: 0.5,  // 0.5 seconds of silence to split
-          minSpeechDuration: 0.25,  // 0.25 seconds minimum speech
+          minSilenceDuration: 0.8,  // Require 0.8s of silence before splitting (capture complete utterances)
+          minSpeechDuration: 0.5,   // Minimum 0.5s of speech (filter out very short sounds)
           threshold: 0.5,            // Detection threshold
           windowSize: 512,
         },
@@ -28,7 +28,7 @@ export class VADManager {
       };
 
       // Second parameter is buffer size in seconds
-      this.vad = new sherpa.Vad(config, 30);
+      this.vad = new sherpa.Vad(config, 60);  // Increased buffer to 60s for longer recordings
 
       if (!this.vad) {
         throw new Error('Failed to create VAD instance');
