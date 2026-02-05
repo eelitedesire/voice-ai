@@ -162,14 +162,20 @@ export async function POST(request: NextRequest) {
         const voiceprint = await sherpaManager.extractVoiceprint(segmentPath);
         const speakerRole = await sherpaManager.identifySpeaker(voiceprint);
 
-        // Try transcribing the entire audio file instead of just the segment
-        // OnlineRecognizer might need more context
-        console.log('Attempting full audio transcription for comparison...');
-        const fullText = await sherpaManager.transcribeAudio(samples);
-        console.log('Full audio transcription:', fullText || '(empty)');
+        // For better transcription, include context from surrounding audio
+        // Use 2 seconds before and 1 second after the segment
+        const contextBefore = 2.0; // seconds
+        const contextAfter = 1.0;  // seconds
 
-        // Transcribe the segment
-        const text = await sherpaManager.transcribeAudio(processedSamples);
+        const contextStartSample = Math.max(0, startSample - Math.floor(contextBefore * sampleRate));
+        const contextEndSample = Math.min(samples.length, endSample + Math.floor(contextAfter * sampleRate));
+
+        const contextSamples = extractSegment(samples, contextStartSample, contextEndSample);
+
+        console.log(`Transcribing with context: segment=${(segmentSamples.length / sampleRate).toFixed(2)}s, with context=${(contextSamples.length / sampleRate).toFixed(2)}s`);
+
+        // Transcribe the segment with surrounding context
+        const text = await sherpaManager.transcribeAudio(contextSamples);
 
         if (text && text.trim().length > 0) {
           transcript.push({
@@ -181,16 +187,6 @@ export async function POST(request: NextRequest) {
           console.log(`Segment ${i + 1}: [${speakerRole || 'Unknown'}] "${text.trim()}"`);
         } else {
           console.log(`Segment ${i + 1}: No text transcribed`);
-
-          // If segment transcription failed but full audio worked, use that
-          if (fullText && fullText.trim().length > 0) {
-            transcript.push({
-              speaker: speakerRole || 'Client 1',
-              text: fullText.trim(),
-              timestamp: recordingStartTime + Math.floor(segmentStart * 1000),
-            });
-            console.log(`Segment ${i + 1}: Using full audio transcription: "${fullText.trim()}"`);
-          }
         }
       } catch (error) {
         console.error(`Error processing segment ${i + 1}:`, error);
