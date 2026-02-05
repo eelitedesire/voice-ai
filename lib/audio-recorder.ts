@@ -87,8 +87,21 @@ export class AudioRecorder {
       console.log(`Recording for ${duration} seconds...`);
 
       let recordingStarted = false;
-      const proc = spawn('rec', args);
+      const proc = spawn('rec', args, {
+        stdio: ['pipe', 'pipe', 'pipe'] // stdin, stdout, stderr
+      });
 
+      // Close stdin to signal no more input will be provided
+      if (proc.stdin) {
+        proc.stdin.end();
+      }
+
+      // Consume stdout to prevent buffer from filling up
+      proc.stdout.on('data', () => {
+        // Just consume the data, no need to process it
+      });
+
+      // Consume stderr and look for recording status
       proc.stderr.on('data', (data) => {
         const output = data.toString();
         if (output.includes('Recording') && !recordingStarted) {
@@ -97,17 +110,37 @@ export class AudioRecorder {
         }
       });
 
+      let completed = false;
+
+      proc.on('exit', (code) => {
+        if (!completed) {
+          completed = true;
+          if (code === 0) {
+            console.log('✅ Recording complete!');
+            resolve();
+          } else {
+            reject(new Error(`Recording failed with exit code ${code}`));
+          }
+        }
+      });
+
       proc.on('close', (code) => {
-        if (code === 0) {
-          console.log('✅ Recording complete!');
-          resolve();
-        } else {
-          reject(new Error(`Recording failed with code ${code}`));
+        if (!completed) {
+          completed = true;
+          if (code === 0) {
+            console.log('✅ Recording complete!');
+            resolve();
+          } else {
+            reject(new Error(`Recording failed with code ${code}`));
+          }
         }
       });
 
       proc.on('error', (err) => {
-        reject(new Error(`Failed to start recording: ${err.message}`));
+        if (!completed) {
+          completed = true;
+          reject(new Error(`Failed to start recording: ${err.message}`));
+        }
       });
     });
   }
@@ -148,19 +181,56 @@ export class AudioRecorder {
       console.log(`Recording for ${duration} seconds...`);
       console.log('🔴 Recording started! Speak now...');
 
-      const proc = spawn('ffmpeg', args);
+      const proc = spawn('ffmpeg', args, {
+        stdio: ['pipe', 'pipe', 'pipe'] // stdin, stdout, stderr
+      });
+
+      // Close stdin to signal no more input will be provided
+      if (proc.stdin) {
+        proc.stdin.end();
+      }
+
+      // Consume stdout to prevent buffer from filling up
+      proc.stdout.on('data', () => {
+        // Just consume the data, no need to process it
+      });
+
+      // Consume stderr to prevent buffer from filling up
+      proc.stderr.on('data', () => {
+        // Just consume the data, no need to process it
+      });
+
+      let completed = false;
+
+      proc.on('exit', (code) => {
+        if (!completed) {
+          completed = true;
+          if (code === 0) {
+            console.log('✅ Recording complete!');
+            resolve();
+          } else {
+            reject(new Error(`Recording failed with exit code ${code}`));
+          }
+        }
+      });
 
       proc.on('close', (code) => {
-        if (code === 0) {
-          console.log('✅ Recording complete!');
-          resolve();
-        } else {
-          reject(new Error(`Recording failed with code ${code}`));
+        if (!completed) {
+          completed = true;
+          if (code === 0) {
+            console.log('✅ Recording complete!');
+            resolve();
+          } else {
+            reject(new Error(`Recording failed with code ${code}`));
+          }
         }
       });
 
       proc.on('error', (err) => {
-        reject(new Error(`Failed to start recording: ${err.message}`));
+        if (!completed) {
+          completed = true;
+          reject(new Error(`Failed to start recording: ${err.message}`));
+        }
       });
     });
   }
@@ -184,7 +254,7 @@ export class AudioRecorder {
    * Interactively record audio
    */
   async recordInteractive(
-    role: 'therapist' | 'client',
+    role: 'client1' | 'client2',
     outputDir: string = './audio'
   ): Promise<string> {
     // Ensure output directory exists
@@ -193,9 +263,10 @@ export class AudioRecorder {
     }
 
     const outputPath = path.join(outputDir, `${role}.wav`);
+    const displayName = role === 'client1' ? 'CLIENT 1' : 'CLIENT 2';
 
     console.log(`\n${'='.repeat(60)}`);
-    console.log(`🎙️  Recording ${role.toUpperCase()} voice sample`);
+    console.log(`🎙️  Recording ${displayName} voice sample`);
     console.log(`${'='.repeat(60)}\n`);
 
     // Get recording duration
@@ -216,6 +287,18 @@ export class AudioRecorder {
     console.log('  • Speak naturally at normal volume');
     console.log('  • Position microphone 6-12 inches away');
     console.log('  • Speak continuously for the full duration\n');
+
+    // Display sample text to read
+    console.log('📝 Please read the following text during recording:\n');
+    console.log('━'.repeat(60));
+    console.log('Hello, my name is ' + (role === 'client1' ? 'Sarah' : 'John') + '.');
+    console.log('I\'m here today because my partner and I have been experiencing');
+    console.log('some challenges in our relationship. We want to work together');
+    console.log('to improve our communication and understanding of each other.');
+    console.log('I believe that with the right support and guidance, we can');
+    console.log('build a stronger, healthier relationship together.');
+    console.log('━'.repeat(60));
+    console.log('');
 
     await this.waitForEnter('Press ENTER when ready to start recording...');
 
@@ -274,20 +357,20 @@ export class AudioRecorder {
   }
 
   /**
-   * Record both therapist and client
+   * Record both clients for couple therapy
    */
-  async recordBoth(): Promise<{ therapist: string; client: string }> {
-    console.log('\n🎤 Interactive Voice Enrollment\n');
+  async recordBoth(): Promise<{ client1: string; client2: string }> {
+    console.log('\n🎤 Interactive Voice Enrollment for Couple Therapy\n');
     console.log('You will record two voice samples:');
-    console.log('  1. Therapist voice');
-    console.log('  2. Client voice\n');
+    console.log('  1. Client 1 voice');
+    console.log('  2. Client 2 voice\n');
 
-    const therapistPath = await this.recordInteractive('therapist');
-    const clientPath = await this.recordInteractive('client');
+    const client1Path = await this.recordInteractive('client1');
+    const client2Path = await this.recordInteractive('client2');
 
     return {
-      therapist: therapistPath,
-      client: clientPath,
+      client1: client1Path,
+      client2: client2Path,
     };
   }
 }

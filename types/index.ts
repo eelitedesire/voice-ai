@@ -1,5 +1,5 @@
 export interface TranscriptEntry {
-  speaker: 'Therapist' | 'Client';
+  speaker: 'Client 1' | 'Client 2';
   text: string;
   timestamp: number;
 }
@@ -21,7 +21,7 @@ export interface TherapeuticAnalysis {
 
 export interface SpeakerProfile {
   id: string;
-  role: 'Therapist' | 'Client';
+  role: 'Client 1' | 'Client 2';
   voiceprint: number[];
 }
 

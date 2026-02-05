@@ -27,7 +27,8 @@ export class VADManager {
         debug: 0,
       };
 
-      this.vad = new sherpa.Vad(config);
+      // Second parameter is buffer size in seconds
+      this.vad = new sherpa.Vad(config, 30);
 
       if (!this.vad) {
         throw new Error('Failed to create VAD instance');
@@ -55,13 +56,18 @@ export class VADManager {
         throw new Error(`Failed to read audio file: ${audioPath}`);
       }
 
+      // Ensure samples is Float32Array
+      const samples = wave.samples instanceof Float32Array
+        ? wave.samples
+        : new Float32Array(wave.samples);
+
       // Process audio in chunks
       const chunkSize = 16000; // 1 second chunks at 16kHz
       let hasSpeech = false;
 
-      for (let i = 0; i < wave.samples.length; i += chunkSize) {
-        const chunk = wave.samples.slice(i, Math.min(i + chunkSize, wave.samples.length));
-        this.vad.acceptWaveform({ sampleRate: wave.sampleRate, samples: chunk });
+      for (let i = 0; i < samples.length; i += chunkSize) {
+        const chunk = samples.slice(i, Math.min(i + chunkSize, samples.length));
+        this.vad.acceptWaveform(chunk);
 
         if (this.vad.isSpeech()) {
           hasSpeech = true;
@@ -93,15 +99,20 @@ export class VADManager {
         throw new Error(`Failed to read audio file: ${audioPath}`);
       }
 
+      // Ensure samples is Float32Array
+      const samples = wave.samples instanceof Float32Array
+        ? wave.samples
+        : new Float32Array(wave.samples);
+
       const segments: Array<[number, number]> = [];
       let speechStart: number | null = null;
       const sampleRate = wave.sampleRate;
 
       // Process audio in chunks
       const chunkSize = 512; // Window size
-      for (let i = 0; i < wave.samples.length; i += chunkSize) {
-        const chunk = wave.samples.slice(i, Math.min(i + chunkSize, wave.samples.length));
-        this.vad.acceptWaveform({ sampleRate, samples: chunk });
+      for (let i = 0; i < samples.length; i += chunkSize) {
+        const chunk = samples.slice(i, Math.min(i + chunkSize, samples.length));
+        this.vad.acceptWaveform(chunk);
 
         const isSpeech = this.vad.isSpeech();
 
@@ -117,7 +128,7 @@ export class VADManager {
 
       // Handle case where speech continues to end
       if (speechStart !== null) {
-        segments.push([speechStart, wave.samples.length / sampleRate]);
+        segments.push([speechStart, samples.length / sampleRate]);
       }
 
       this.vad.flush();
@@ -130,7 +141,7 @@ export class VADManager {
 
   cleanup(): void {
     if (this.vad) {
-      this.vad.free();
+      // VAD cleanup - no free() method needed, just set to null
       this.vad = null;
     }
   }
@@ -264,8 +275,7 @@ export class SherpaONNXManager {
         throw new Error('Failed to compute speaker embedding');
       }
 
-      // Free the stream
-      stream.free();
+      // Stream cleanup - no free() method needed, will be garbage collected
 
       return Array.from(embedding);
     } catch (error) {
@@ -276,7 +286,7 @@ export class SherpaONNXManager {
 
   async enrollSpeaker(
     speakerId: string,
-    role: 'Therapist' | 'Client',
+    role: 'Client 1' | 'Client 2',
     audioPath: string
   ): Promise<void> {
     if (!this.speakerDatabase) {
@@ -376,11 +386,11 @@ export class SherpaONNXManager {
 
   cleanup(): void {
     if (this.recognizer) {
-      this.recognizer.free();
+      // Cleanup recognizer - no free() method needed, just set to null
       this.recognizer = null;
     }
     if (this.speakerEmbedding) {
-      this.speakerEmbedding.free();
+      // Cleanup speaker embedding - no free() method needed, just set to null
       this.speakerEmbedding = null;
     }
   }

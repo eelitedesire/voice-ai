@@ -36,14 +36,14 @@ export default function TranscriptDisplay({ transcript }: TranscriptDisplayProps
           <div
             key={index}
             className={`flex flex-col ${
-              entry.speaker === 'Therapist' ? 'items-start' : 'items-end'
+              entry.speaker === 'Client 1' ? 'items-start' : 'items-end'
             }`}
           >
             <div
               className={`px-4 py-2 rounded-lg max-w-[80%] ${
-                entry.speaker === 'Therapist'
+                entry.speaker === 'Client 1'
                   ? 'bg-blue-100 text-blue-900'
-                  : 'bg-green-100 text-green-900'
+                  : 'bg-purple-100 text-purple-900'
               }`}
             >
               <div className="font-semibold text-sm mb-1">{entry.speaker}</div>
