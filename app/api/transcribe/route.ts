@@ -140,17 +140,18 @@ export async function POST(request: NextRequest) {
         continue;
       }
 
-      // Pad segment if it's shorter than minimum required length
-      // Model requires at least 45 frames, which needs ~0.6s of audio
-      const minSamples = sampleRate * 0.6;
+      // Pad segment if needed
+      // Model expects exactly 45 frames
+      // Frame calculation: (samples - window_size) / shift_size + 1 = 45
+      // With window=400 (25ms) and shift=160 (10ms): samples = 7440 (0.465s)
+      const targetSamples = 7440; // Exact length for 45 frames
       let processedSamples = segmentSamples;
-      if (segmentSamples.length < minSamples) {
-        const paddingNeeded = minSamples - segmentSamples.length;
-        const paddedSamples = new Float32Array(minSamples);
-        paddedSamples.set(segmentSamples);
-        // Padding with zeros at the end
+      if (segmentSamples.length !== targetSamples) {
+        const paddedSamples = new Float32Array(targetSamples);
+        paddedSamples.set(segmentSamples.slice(0, targetSamples));
+        // Padding with zeros if shorter, or truncating if longer
         processedSamples = paddedSamples;
-        console.log(`Padded segment ${i + 1} from ${(segmentSamples.length / sampleRate).toFixed(2)}s to ${(minSamples / sampleRate).toFixed(2)}s`);
+        console.log(`Adjusted segment ${i + 1} from ${(segmentSamples.length / sampleRate).toFixed(2)}s to ${(targetSamples / sampleRate).toFixed(2)}s`);
       }
 
       // Save segment to temporary WAV file for speaker identification
