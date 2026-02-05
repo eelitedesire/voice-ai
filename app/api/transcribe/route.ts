@@ -142,9 +142,9 @@ export async function POST(request: NextRequest) {
 
       // Pad segment if needed
       // Model expects exactly 45 frames
-      // Frame calculation: (samples - window_size) / shift_size + 1 = 45
-      // With window=400 (25ms) and shift=160 (10ms): samples = 7440 (0.465s)
-      const targetSamples = 7440; // Exact length for 45 frames
+      // Empirically determined: 7440 samples → 47 frames, so reduce by 2 frame shifts
+      // 7440 - (2 * 160) = 7120 samples should give exactly 45 frames
+      const targetSamples = 7120; // Exact length for 45 frames (0.445s)
       let processedSamples = segmentSamples;
       if (segmentSamples.length !== targetSamples) {
         const paddedSamples = new Float32Array(targetSamples);
