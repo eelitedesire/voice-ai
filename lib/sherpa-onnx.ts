@@ -56,13 +56,18 @@ export class VADManager {
         throw new Error(`Failed to read audio file: ${audioPath}`);
       }
 
+      // Ensure samples is Float32Array
+      const samples = wave.samples instanceof Float32Array
+        ? wave.samples
+        : new Float32Array(wave.samples);
+
       // Process audio in chunks
       const chunkSize = 16000; // 1 second chunks at 16kHz
       let hasSpeech = false;
 
-      for (let i = 0; i < wave.samples.length; i += chunkSize) {
-        const chunk = wave.samples.slice(i, Math.min(i + chunkSize, wave.samples.length));
-        this.vad.acceptWaveform({ sampleRate: wave.sampleRate, samples: chunk });
+      for (let i = 0; i < samples.length; i += chunkSize) {
+        const chunk = samples.slice(i, Math.min(i + chunkSize, samples.length));
+        this.vad.acceptWaveform(chunk);
 
         if (this.vad.isSpeech()) {
           hasSpeech = true;
@@ -94,15 +99,20 @@ export class VADManager {
         throw new Error(`Failed to read audio file: ${audioPath}`);
       }
 
+      // Ensure samples is Float32Array
+      const samples = wave.samples instanceof Float32Array
+        ? wave.samples
+        : new Float32Array(wave.samples);
+
       const segments: Array<[number, number]> = [];
       let speechStart: number | null = null;
       const sampleRate = wave.sampleRate;
 
       // Process audio in chunks
       const chunkSize = 512; // Window size
-      for (let i = 0; i < wave.samples.length; i += chunkSize) {
-        const chunk = wave.samples.slice(i, Math.min(i + chunkSize, wave.samples.length));
-        this.vad.acceptWaveform({ sampleRate, samples: chunk });
+      for (let i = 0; i < samples.length; i += chunkSize) {
+        const chunk = samples.slice(i, Math.min(i + chunkSize, samples.length));
+        this.vad.acceptWaveform(chunk);
 
         const isSpeech = this.vad.isSpeech();
 
@@ -118,7 +128,7 @@ export class VADManager {
 
       // Handle case where speech continues to end
       if (speechStart !== null) {
-        segments.push([speechStart, wave.samples.length / sampleRate]);
+        segments.push([speechStart, samples.length / sampleRate]);
       }
 
       this.vad.flush();
@@ -131,7 +141,7 @@ export class VADManager {
 
   cleanup(): void {
     if (this.vad) {
-      this.vad.free();
+      // VAD cleanup - no free() method needed, just set to null
       this.vad = null;
     }
   }
