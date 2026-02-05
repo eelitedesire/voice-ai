@@ -61,21 +61,18 @@ export class VADManager {
         ? wave.samples
         : new Float32Array(wave.samples);
 
-      // Process audio in chunks
-      const chunkSize = 16000; // 1 second chunks at 16kHz
-      let hasSpeech = false;
+      // Process all audio samples
+      this.vad.acceptWaveform(samples);
+      this.vad.flush();
 
-      for (let i = 0; i < samples.length; i += chunkSize) {
-        const chunk = samples.slice(i, Math.min(i + chunkSize, samples.length));
-        this.vad.acceptWaveform(chunk);
+      // Check if any speech segments were detected
+      const hasSpeech = !this.vad.isEmpty();
 
-        if (this.vad.isSpeech()) {
-          hasSpeech = true;
-          break;
-        }
+      // Clear the VAD buffer
+      while (!this.vad.isEmpty()) {
+        this.vad.pop();
       }
 
-      this.vad.flush();
       return hasSpeech;
     } catch (error) {
       console.error('Failed to detect speech:', error);
@@ -104,34 +101,28 @@ export class VADManager {
         ? wave.samples
         : new Float32Array(wave.samples);
 
-      const segments: Array<[number, number]> = [];
-      let speechStart: number | null = null;
       const sampleRate = wave.sampleRate;
 
-      // Process audio in chunks
-      const chunkSize = 512; // Window size
-      for (let i = 0; i < samples.length; i += chunkSize) {
-        const chunk = samples.slice(i, Math.min(i + chunkSize, samples.length));
-        this.vad.acceptWaveform(chunk);
-
-        const isSpeech = this.vad.isSpeech();
-
-        if (isSpeech && speechStart === null) {
-          // Speech started
-          speechStart = i / sampleRate;
-        } else if (!isSpeech && speechStart !== null) {
-          // Speech ended
-          segments.push([speechStart, i / sampleRate]);
-          speechStart = null;
-        }
-      }
-
-      // Handle case where speech continues to end
-      if (speechStart !== null) {
-        segments.push([speechStart, samples.length / sampleRate]);
-      }
-
+      // Feed all audio to VAD
+      this.vad.acceptWaveform(samples);
       this.vad.flush();
+
+      // Collect all detected speech segments
+      const segments: Array<[number, number]> = [];
+
+      while (!this.vad.isEmpty()) {
+        const segment = this.vad.front();
+        this.vad.pop();
+
+        // segment.start and segment.samples are provided by VAD
+        // Convert to time in seconds
+        const startTime = segment.start / sampleRate;
+        const duration = segment.samples.length / sampleRate;
+        const endTime = startTime + duration;
+
+        segments.push([startTime, endTime]);
+      }
+
       return segments;
     } catch (error) {
       console.error('Failed to get speech segments:', error);
