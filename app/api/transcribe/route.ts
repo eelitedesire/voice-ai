@@ -134,10 +134,23 @@ export async function POST(request: NextRequest) {
 
       console.log(`Segment ${i + 1} extracted: ${segmentSamples.length} samples (${(segmentSamples.length / sampleRate).toFixed(2)}s)`);
 
-      // Skip very short segments (less than 0.3 seconds)
-      if (segmentSamples.length < sampleRate * 0.3) {
-        console.log(`Skipping segment ${i + 1} (too short: ${(segmentSamples.length / sampleRate).toFixed(2)}s < 0.3s)`);
+      // Skip segments that are too short to contain speech (less than 0.1 seconds)
+      if (segmentSamples.length < sampleRate * 0.1) {
+        console.log(`Skipping segment ${i + 1} (too short: ${(segmentSamples.length / sampleRate).toFixed(2)}s < 0.1s)`);
         continue;
+      }
+
+      // Pad segment if it's shorter than minimum required length
+      // Model requires at least 45 frames, which needs ~0.6s of audio
+      const minSamples = sampleRate * 0.6;
+      let processedSamples = segmentSamples;
+      if (segmentSamples.length < minSamples) {
+        const paddingNeeded = minSamples - segmentSamples.length;
+        const paddedSamples = new Float32Array(minSamples);
+        paddedSamples.set(segmentSamples);
+        // Padding with zeros at the end
+        processedSamples = paddedSamples;
+        console.log(`Padded segment ${i + 1} from ${(segmentSamples.length / sampleRate).toFixed(2)}s to ${(minSamples / sampleRate).toFixed(2)}s`);
       }
 
       // Save segment to temporary WAV file for speaker identification
@@ -146,7 +159,7 @@ export async function POST(request: NextRequest) {
 
       // Write segment as WAV file using sherpa's writeWave
       sherpa.writeWave(segmentPath, {
-        samples: segmentSamples,
+        samples: processedSamples,
         sampleRate: sampleRate,
       });
 
@@ -156,7 +169,7 @@ export async function POST(request: NextRequest) {
         const speakerRole = await sherpaManager.identifySpeaker(voiceprint);
 
         // Transcribe the segment
-        const text = await sherpaManager.transcribeAudio(segmentSamples);
+        const text = await sherpaManager.transcribeAudio(processedSamples);
 
         if (text && text.trim().length > 0) {
           transcript.push({
