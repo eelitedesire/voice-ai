@@ -134,25 +134,14 @@ export async function POST(request: NextRequest) {
 
       console.log(`Segment ${i + 1} extracted: ${segmentSamples.length} samples (${(segmentSamples.length / sampleRate).toFixed(2)}s)`);
 
-      // Skip segments that are too short to contain speech (less than 0.1 seconds)
-      if (segmentSamples.length < sampleRate * 0.1) {
-        console.log(`Skipping segment ${i + 1} (too short: ${(segmentSamples.length / sampleRate).toFixed(2)}s < 0.1s)`);
+      // Skip segments that are too short to contain meaningful speech (less than 0.2 seconds)
+      if (segmentSamples.length < sampleRate * 0.2) {
+        console.log(`Skipping segment ${i + 1} (too short: ${(segmentSamples.length / sampleRate).toFixed(2)}s < 0.2s)`);
         continue;
       }
 
-      // Pad segment if needed
-      // Model expects exactly 45 frames
-      // Empirically determined: 7440 samples → 47 frames, so reduce by 2 frame shifts
-      // 7440 - (2 * 160) = 7120 samples should give exactly 45 frames
-      const targetSamples = 7120; // Exact length for 45 frames (0.445s)
-      let processedSamples = segmentSamples;
-      if (segmentSamples.length !== targetSamples) {
-        const paddedSamples = new Float32Array(targetSamples);
-        paddedSamples.set(segmentSamples.slice(0, targetSamples));
-        // Padding with zeros if shorter, or truncating if longer
-        processedSamples = paddedSamples;
-        console.log(`Adjusted segment ${i + 1} from ${(segmentSamples.length / sampleRate).toFixed(2)}s to ${(targetSamples / sampleRate).toFixed(2)}s`);
-      }
+      // OnlineRecognizer can handle variable-length segments, no padding needed
+      const processedSamples = segmentSamples;
 
       // Save segment to temporary WAV file for speaker identification
       const segmentPath = path.join(tmpdir(), `segment-${Date.now()}-${i}.wav`);

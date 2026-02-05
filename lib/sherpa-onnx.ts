@@ -159,8 +159,8 @@ export class SherpaONNXManager {
 
   async initializeRecognizer(): Promise<void> {
     try {
-      // Initialize speech recognition (ASR) using OfflineRecognizer
-      // OfflineRecognizer is designed for processing complete audio segments
+      // Initialize speech recognition (ASR) using OnlineRecognizer
+      // The downloaded models are streaming zipformer models for OnlineRecognizer
       const config = {
         featConfig: {
           sampleRate: 16000,
@@ -175,11 +175,12 @@ export class SherpaONNXManager {
           tokens: path.join(this.modelPath, 'tokens.txt'),
           numThreads: 2,
           provider: 'cpu',
-          debug: 0,
+          debug: 1,  // Enable debug for troubleshooting
         },
       };
 
-      this.recognizer = new sherpa.OfflineRecognizer(config);
+      this.recognizer = new sherpa.OnlineRecognizer(config);
+      console.log('OnlineRecognizer initialized successfully');
     } catch (error) {
       console.error('Failed to initialize Sherpa-ONNX recognizer:', error);
       throw error;
@@ -352,20 +353,27 @@ export class SherpaONNXManager {
     }
 
     try {
-      // Create a stream for OfflineRecognizer
+      // Create a stream for OnlineRecognizer
       const stream = this.recognizer.createStream();
 
-      // Accept waveform (OfflineRecognizer processes complete segments)
+      // Accept waveform (feed all audio at once for a complete segment)
       stream.acceptWaveform({
         samples: audioBuffer,
         sampleRate: 16000,
       });
 
-      // Decode once (OfflineRecognizer doesn't need a loop)
-      this.recognizer.decode(stream);
+      // Signal that input is finished
+      stream.inputFinished();
 
-      // Get the result
+      // Decode in a loop while the recognizer is ready
+      while (this.recognizer.isReady(stream)) {
+        this.recognizer.decode(stream);
+      }
+
+      // Get the final result
       const result = this.recognizer.getResult(stream);
+
+      console.log('Transcription result:', result.text || '(empty)');
 
       // Stream cleanup - no free() method needed, will be garbage collected
 
