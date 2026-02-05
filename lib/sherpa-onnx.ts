@@ -365,8 +365,7 @@ export class SherpaONNXManager {
 
       const result = this.recognizer.getResult(stream);
 
-      // Free the stream
-      stream.free();
+      // Stream cleanup - no free() method needed, will be garbage collected
 
       return result.text || '';
     } catch (error) {
