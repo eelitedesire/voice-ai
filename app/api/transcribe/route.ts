@@ -110,6 +110,7 @@ export async function POST(request: NextRequest) {
     }
 
     console.log(`Detected ${speechSegments.length} speech segments`);
+    console.log(`Audio file info: ${samples.length} samples, ${(samples.length / sampleRate).toFixed(2)}s duration, ${sampleRate}Hz`);
 
     // Process each speech segment
     const transcript: TranscriptEntry[] = [];
@@ -120,14 +121,22 @@ export async function POST(request: NextRequest) {
       const startSample = Math.floor(segmentStart * sampleRate);
       const endSample = Math.floor(segmentEnd * sampleRate);
 
-      console.log(`Processing segment ${i + 1}/${speechSegments.length}: ${segmentStart.toFixed(2)}s - ${segmentEnd.toFixed(2)}s`);
+      console.log(`Processing segment ${i + 1}/${speechSegments.length}: ${segmentStart.toFixed(2)}s - ${segmentEnd.toFixed(2)}s (samples: ${startSample} - ${endSample})`);
+
+      // Validate segment bounds
+      if (startSample >= samples.length || endSample > samples.length) {
+        console.log(`Skipping segment ${i + 1} (out of bounds: audio has ${samples.length} samples)`);
+        continue;
+      }
 
       // Extract audio segment
       const segmentSamples = extractSegment(samples, startSample, endSample);
 
+      console.log(`Segment ${i + 1} extracted: ${segmentSamples.length} samples (${(segmentSamples.length / sampleRate).toFixed(2)}s)`);
+
       // Skip very short segments (less than 0.3 seconds)
       if (segmentSamples.length < sampleRate * 0.3) {
-        console.log(`Skipping segment ${i + 1} (too short)`);
+        console.log(`Skipping segment ${i + 1} (too short: ${(segmentSamples.length / sampleRate).toFixed(2)}s < 0.3s)`);
         continue;
       }
 

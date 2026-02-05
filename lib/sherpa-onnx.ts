@@ -114,11 +114,20 @@ export class VADManager {
         const segment = this.vad.front();
         this.vad.pop();
 
+        // Debug: log segment structure
+        console.log('VAD segment:', {
+          start: segment.start,
+          samplesLength: segment.samples?.length,
+          sampleRate: sampleRate,
+        });
+
         // segment.start and segment.samples are provided by VAD
         // Convert to time in seconds
         const startTime = segment.start / sampleRate;
         const duration = segment.samples.length / sampleRate;
         const endTime = startTime + duration;
+
+        console.log(`VAD segment time: ${startTime.toFixed(2)}s - ${endTime.toFixed(2)}s`);
 
         segments.push([startTime, endTime]);
       }
