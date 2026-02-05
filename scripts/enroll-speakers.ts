@@ -36,6 +36,20 @@ function parseArgs(): EnrollmentArgs {
   const args: EnrollmentArgs = {};
   const cliArgs = process.argv.slice(2);
 
+  // Check if we have positional arguments (no flags)
+  const hasFlags = cliArgs.some(arg => arg.startsWith('--') || arg === '-r');
+
+  if (!hasFlags && cliArgs.length >= 2) {
+    // Positional arguments: client1 client2 [output]
+    args.client1 = cliArgs[0];
+    args.client2 = cliArgs[1];
+    if (cliArgs[2]) {
+      args.output = cliArgs[2];
+    }
+    return args;
+  }
+
+  // Parse flag-based arguments
   for (let i = 0; i < cliArgs.length; i++) {
     if (cliArgs[i] === '--client1' && cliArgs[i + 1]) {
       args.client1 = cliArgs[i + 1];
