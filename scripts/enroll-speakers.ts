@@ -117,38 +117,34 @@ async function main() {
   console.log(`   Output database: ${outputPath}\n`);
 
   try {
-    console.log('🔧 Initializing Sherpa-ONNX and VAD...');
+    console.log('🔧 Initializing Sherpa-ONNX...');
     const sherpa = new SherpaONNXManager('./models');
-    const vad = new VADManager('./models');
 
     await sherpa.initializeSpeakerEmbedding();
-    await vad.initialize();
     await sherpa.loadSpeakerDatabase(outputPath);
 
-    console.log('✅ Sherpa-ONNX and VAD initialized\n');
+    console.log('✅ Sherpa-ONNX initialized\n');
 
-    // Validate recordings contain speech
-    console.log('🔍 Validating audio quality with VAD...');
+    // Basic audio file validation
+    console.log('🔍 Validating audio files...');
 
-    const client1HasSpeech = await vad.hasSpeech(client1Path);
-    if (!client1HasSpeech) {
-      console.error('❌ Client 1 audio does not contain detectable speech!');
-      console.error('   Please ensure the recording has clear audio.');
-      vad.cleanup();
+    const stats1 = fs.statSync(client1Path);
+    if (stats1.size < 1000) {
+      console.error('❌ Client 1 audio file is too small!');
+      console.error('   Please ensure the recording captured audio.');
       sherpa.cleanup();
       process.exit(1);
     }
-    console.log('✅ Client 1 audio validated');
+    console.log('✅ Client 1 audio file validated');
 
-    const client2HasSpeech = await vad.hasSpeech(client2Path);
-    if (!client2HasSpeech) {
-      console.error('❌ Client 2 audio does not contain detectable speech!');
-      console.error('   Please ensure the recording has clear audio.');
-      vad.cleanup();
+    const stats2 = fs.statSync(client2Path);
+    if (stats2.size < 1000) {
+      console.error('❌ Client 2 audio file is too small!');
+      console.error('   Please ensure the recording captured audio.');
       sherpa.cleanup();
       process.exit(1);
     }
-    console.log('✅ Client 2 audio validated\n');
+    console.log('✅ Client 2 audio file validated\n');
 
     // Enroll client 1
     console.log('🎤 Processing Client 1 voice...');
@@ -171,7 +167,6 @@ async function main() {
     console.log('  2. Open http://localhost:3000');
     console.log('  3. Start a therapy session\n');
 
-    vad.cleanup();
     sherpa.cleanup();
   } catch (error) {
     console.error('❌ Enrollment failed:', error);

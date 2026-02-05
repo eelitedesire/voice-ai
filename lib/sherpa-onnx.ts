@@ -387,11 +387,11 @@ export class SherpaONNXManager {
 
   cleanup(): void {
     if (this.recognizer) {
-      this.recognizer.free();
+      // Cleanup recognizer - no free() method needed, just set to null
       this.recognizer = null;
     }
     if (this.speakerEmbedding) {
-      this.speakerEmbedding.free();
+      // Cleanup speaker embedding - no free() method needed, just set to null
       this.speakerEmbedding = null;
     }
   }
