@@ -275,8 +275,7 @@ export class SherpaONNXManager {
         throw new Error('Failed to compute speaker embedding');
       }
 
-      // Free the stream
-      stream.free();
+      // Stream cleanup - no free() method needed, will be garbage collected
 
       return Array.from(embedding);
     } catch (error) {
