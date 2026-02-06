@@ -150,7 +150,7 @@ export class VADManager {
 export class SherpaONNXManager {
   private recognizer: any = null;
   private speakerEmbedding: any = null;
-  private speakerDatabase: SpeakerDatabase | null = null;
+  private speakerManager: any = null; // Use SpeakerEmbeddingManager instead of manual DB
   private modelPath: string;
 
   constructor(modelPath: string = './models') {
@@ -203,7 +203,11 @@ export class SherpaONNXManager {
         throw new Error('Failed to create speaker embedding extractor');
       }
 
+      // Create SpeakerEmbeddingManager with the extractor's dimension
+      this.speakerManager = new sherpa.SpeakerEmbeddingManager(this.speakerEmbedding.dim);
+
       console.log(`Speaker embedding extractor created. Dimension: ${this.speakerEmbedding.dim}`);
+      console.log(`Speaker embedding manager initialized`);
     } catch (error) {
       console.error('Failed to initialize speaker embedding:', error);
       throw error;
@@ -213,18 +217,28 @@ export class SherpaONNXManager {
   async loadSpeakerDatabase(dbPath: string): Promise<void> {
     try {
       const data = await fs.promises.readFile(dbPath, 'utf-8');
-      this.speakerDatabase = JSON.parse(data);
-      console.log(`Speaker database loaded: ${this.speakerDatabase.speakers.length} speakers enrolled`);
-      this.speakerDatabase.speakers.forEach((s, i) => {
-        console.log(`  Speaker ${i + 1}: ${s.role} (${s.id})`);
-      });
+      const db: SpeakerDatabase = JSON.parse(data);
+
+      console.log(`Loading speaker database: ${db.speakers.length} speakers`);
+
+      // Add each speaker to the SpeakerEmbeddingManager
+      for (const speaker of db.speakers) {
+        const success = this.speakerManager.add({
+          name: speaker.role, // Use role as name (e.g., "Client 1", "Client 2")
+          v: speaker.voiceprint,
+        });
+
+        if (success) {
+          console.log(`  ✅ Loaded ${speaker.role} (${speaker.id})`);
+        } else {
+          console.warn(`  ❌ Failed to load ${speaker.role}`);
+        }
+      }
+
+      console.log(`Speaker manager now has ${this.speakerManager.getNumSpeakers()} speakers`);
     } catch (error) {
-      console.warn('Speaker database not found, starting fresh');
-      this.speakerDatabase = {
-        speakers: [],
-        modelVersion: '1.0.0',
-        createdAt: Date.now(),
-      };
+      console.warn('Speaker database not found or failed to load');
+      console.log('Speaker manager initialized with 0 speakers');
     }
   }
 
@@ -316,42 +330,25 @@ export class SherpaONNXManager {
   }
 
   async identifySpeaker(voiceprint: number[]): Promise<string | null> {
-    if (!this.speakerDatabase || this.speakerDatabase.speakers.length === 0) {
-      console.log('No speaker database available for identification');
+    if (!this.speakerManager || this.speakerManager.getNumSpeakers() === 0) {
+      console.log('No speakers enrolled for identification');
       return null;
     }
 
-    // Calculate cosine similarity
-    const cosineSimilarity = (a: number[], b: number[]): number => {
-      if (a.length !== b.length) return 0;
+    // Use SpeakerEmbeddingManager's search method
+    const threshold = 0.5; // Similarity threshold
+    const speakerName = this.speakerManager.search({
+      v: voiceprint,
+      threshold: threshold,
+    });
 
-      let dotProduct = 0;
-      let normA = 0;
-      let normB = 0;
-
-      for (let i = 0; i < a.length; i++) {
-        dotProduct += a[i] * b[i];
-        normA += a[i] * a[i];
-        normB += b[i] * b[i];
-      }
-
-      return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
-    };
-
-    let bestMatch: string | null = null;
-    let bestScore = 0;
-
-    for (const speaker of this.speakerDatabase.speakers) {
-      const score = cosineSimilarity(voiceprint, speaker.voiceprint);
-      console.log(`Similarity with ${speaker.role}: ${score.toFixed(3)}`);
-      if (score > bestScore && score > 0.5) { // Lowered threshold from 0.6 to 0.5
-        bestScore = score;
-        bestMatch = speaker.role;
-      }
+    if (speakerName && speakerName !== '') {
+      console.log(`✅ Identified speaker: ${speakerName} (threshold: ${threshold})`);
+      return speakerName;
+    } else {
+      console.log(`❌ No match found (threshold: ${threshold})`);
+      return null;
     }
-
-    console.log(`Best match: ${bestMatch || 'None'} (score: ${bestScore.toFixed(3)})`);
-    return bestMatch;
   }
 
   async transcribeAudio(audioBuffer: Float32Array): Promise<string> {
