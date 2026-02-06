@@ -16,11 +16,13 @@ export default function SessionRecorder({
   const [isRecording, setIsRecording] = useState(false);
   const [isInitialized, setIsInitialized] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isProcessing, setIsProcessing] = useState(false);
 
   const audioRecorder = useRef<AudioRecorder | null>(null);
   const transcript = useRef<TranscriptEntry[]>([]);
   const sessionStartTime = useRef<number>(0);
   const audioChunksRef = useRef<Blob[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const initialize = async () => {
     try {
@@ -94,6 +96,7 @@ export default function SessionRecorder({
 
   const processAudioSession = async (audioBlob: Blob) => {
     try {
+      setIsProcessing(true);
       const formData = new FormData();
       formData.append('audio', audioBlob, 'session.webm');
 
@@ -118,6 +121,31 @@ export default function SessionRecorder({
     } catch (err) {
       console.error('Failed to process audio:', err);
       throw err;
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    try {
+      setError(null);
+      transcript.current = [];
+      sessionStartTime.current = Date.now();
+
+      console.log('Processing uploaded file:', file.name, file.type, file.size);
+
+      await processAudioSession(file);
+      onSessionComplete(transcript.current);
+
+      // Reset file input
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to process file');
     }
   };
 
@@ -132,9 +160,9 @@ export default function SessionRecorder({
       <div className="flex gap-4">
         <button
           onClick={startRecording}
-          disabled={isRecording}
+          disabled={isRecording || isProcessing}
           className={`px-8 py-4 rounded-lg font-semibold text-white transition-all ${
-            isRecording
+            isRecording || isProcessing
               ? 'bg-gray-400 cursor-not-allowed'
               : 'bg-green-500 hover:bg-green-600 active:scale-95'
           }`}
@@ -144,15 +172,37 @@ export default function SessionRecorder({
 
         <button
           onClick={stopRecording}
-          disabled={!isRecording}
+          disabled={!isRecording || isProcessing}
           className={`px-8 py-4 rounded-lg font-semibold text-white transition-all ${
-            !isRecording
+            !isRecording || isProcessing
               ? 'bg-gray-400 cursor-not-allowed'
               : 'bg-red-500 hover:bg-red-600 active:scale-95'
           }`}
         >
           Stop Session
         </button>
+
+        {/* File Upload Button for Testing */}
+        <div className="relative">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".wav,.webm,audio/*"
+            onChange={handleFileUpload}
+            disabled={isRecording || isProcessing}
+            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed"
+          />
+          <button
+            disabled={isRecording || isProcessing}
+            className={`px-8 py-4 rounded-lg font-semibold text-white transition-all ${
+              isRecording || isProcessing
+                ? 'bg-gray-400 cursor-not-allowed'
+                : 'bg-blue-500 hover:bg-blue-600 active:scale-95'
+            }`}
+          >
+            {isProcessing ? 'Processing...' : 'Upload Test File'}
+          </button>
+        </div>
       </div>
 
       {isRecording && (
@@ -161,6 +211,17 @@ export default function SessionRecorder({
           <span className="font-medium">Live Recording</span>
         </div>
       )}
+
+      {isProcessing && (
+        <div className="flex items-center gap-2 text-blue-500">
+          <div className="w-3 h-3 bg-blue-500 rounded-full animate-pulse"></div>
+          <span className="font-medium">Processing audio...</span>
+        </div>
+      )}
+
+      <div className="text-sm text-gray-500 text-center max-w-md">
+        <p>Use "Start Session" to record live, or "Upload Test File" to test with a pre-recorded WAV/WebM file.</p>
+      </div>
     </div>
   );
 }
