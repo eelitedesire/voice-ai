@@ -16,9 +16,9 @@ export class VADManager {
       const config = {
         sileroVad: {
           model: path.join(this.modelPath, 'silero_vad.onnx'),
-          minSilenceDuration: 0.25,  // Detect pauses as short as 0.25s
-          minSpeechDuration: 0.25,   // Minimum 0.25s of speech
-          threshold: 0.15,           // Very low threshold to catch all speech (was 0.3)
+          minSilenceDuration: 0.2,
+          minSpeechDuration: 0.8,
+          threshold: 0.1,
           windowSize: 512,
         },
         sampleRate: 16000,
@@ -174,7 +174,7 @@ export class SherpaONNXManager {
             joiner: path.join(this.modelPath, 'joiner.onnx'),
           },
           tokens: path.join(this.modelPath, 'tokens.txt'),
-          numThreads: 2,
+          numThreads: 1,
           provider: 'cpu',
           debug: 1,  // Enable debug for troubleshooting
         },
@@ -228,17 +228,18 @@ export class SherpaONNXManager {
         for (const speaker of this.speakerDatabase.speakers) {
           // Convert single voiceprint to array for addMulti()
           // This provides better speaker recognition than single sample
-          const voiceprints = Array.isArray(speaker.voiceprint)
-            ? speaker.voiceprint
-            : [speaker.voiceprint];
+          // const voiceprints = Array.isArray(speaker.voiceprint)
+          //   ? speaker.voiceprint
+          //   : [speaker.voiceprint];
+          const voiceprint = new Float32Array(speaker.voiceprint);
 
           const success = this.speakerManager.addMulti({
             name: speaker.role, // Use role as name (e.g., "Client 1", "Client 2")
-            v: voiceprints, // Array of voiceprints (even if just one for now)
+            v: [voiceprint], // Array of voiceprints (even if just one for now)
           });
 
           if (success) {
-            console.log(`  ✅ Loaded ${speaker.role} (${speaker.id}) - ${voiceprints.length} sample(s)`);
+            console.log(`  ✅ Loaded ${speaker.role} (${speaker.id})`);
           } else {
             console.warn(`  ❌ Failed to load ${speaker.role}`);
           }
@@ -249,6 +250,7 @@ export class SherpaONNXManager {
         console.log('Database loaded to memory only (not to manager)');
       }
     } catch (error) {
+      console.log(error);
       console.warn('Speaker database not found or failed to load');
       this.speakerDatabase = {
         speakers: [],
@@ -352,20 +354,31 @@ export class SherpaONNXManager {
       return null;
     }
 
+    console.log(`Searching through ${this.speakerManager.getNumSpeakers()} speakers...`);
+
     // Use SpeakerEmbeddingManager's search method
-    const threshold = 0.5; // Similarity threshold
+    const threshold = 0.35; // Similarity threshold
+    const typedVoiceprint = new Float32Array(voiceprint);
     const speakerName = this.speakerManager.search({
-      v: voiceprint,
+      v: typedVoiceprint,
       threshold: threshold,
     });
 
     if (speakerName && speakerName !== '') {
       console.log(`✅ Identified speaker: ${speakerName} (threshold: ${threshold})`);
       return speakerName;
-    } else {
-      console.log(`❌ No match found (threshold: ${threshold})`);
-      return null;
     }
+
+    const bestGuess = this.speakerManager.search({
+      v: typedVoiceprint,
+      threshold: 0.1, // Very loose
+    });
+
+    if (bestGuess) {
+      console.log(`⚠️ Low confidence match: ${bestGuess}. Using as best guess.`);
+      return bestGuess;
+    }
+    return null;
   }
 
   async transcribeAudio(audioBuffer: Float32Array): Promise<string> {
@@ -431,5 +444,31 @@ export class SherpaONNXManager {
       // Cleanup speaker embedding - no free() method needed, just set to null
       this.speakerEmbedding = null;
     }
+  }
+
+  /**
+   * Generates a similarity report for a given voiceprint against the database.
+   */
+  async generateSimilarityReport(voiceprint: number[]): Promise<Array<{ name: string, score: number }>> {
+    if (!this.speakerDatabase) return [];
+    
+    const results = [];
+    const v1 = new Float32Array(voiceprint);
+
+    for (const speaker of this.speakerDatabase.speakers) {
+      const v2 = new Float32Array(speaker.voiceprint);
+      
+      // Manual Cosine Similarity
+      let dotProduct = 0, normA = 0, normB = 0;
+      for (let i = 0; i < v1.length; i++) {
+        dotProduct += v1[i] * v2[i];
+        normA += v1[i] * v1[i];
+        normB += v2[i] * v2[i];
+      }
+      const score = dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+      results.push({ name: speaker.role, score });
+    }
+
+    return results.sort((a, b) => b.score - a.score);
   }
 }
