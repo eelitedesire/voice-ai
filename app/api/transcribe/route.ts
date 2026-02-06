@@ -22,10 +22,13 @@ async function initializeSherpa() {
     await sherpaManager.initializeSpeakerEmbedding();
 
     const dbPath = path.join(process.cwd(), 'speaker_db.json');
+    console.log('Looking for speaker database at:', dbPath);
     if (fs.existsSync(dbPath)) {
       await sherpaManager.loadSpeakerDatabase(dbPath);
+      console.log('✅ Speaker database loaded successfully');
     } else {
-      console.warn('Speaker database not found. Speaker identification will not work.');
+      console.warn('❌ Speaker database not found at:', dbPath);
+      console.warn('Speaker identification will not work. Run: npm run enroll');
     }
   }
   return sherpaManager;

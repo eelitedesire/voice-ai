@@ -17,8 +17,8 @@ export class VADManager {
         sileroVad: {
           model: path.join(this.modelPath, 'silero_vad.onnx'),
           minSilenceDuration: 0.3,  // Reduced to 0.3s to detect shorter pauses between speakers
-          minSpeechDuration: 0.4,   // Minimum 0.4s of speech
-          threshold: 0.5,            // Detection threshold
+          minSpeechDuration: 0.3,   // Minimum 0.3s of speech (lowered to catch shorter utterances)
+          threshold: 0.3,            // Lowered threshold to detect quieter speech
           windowSize: 512,
         },
         sampleRate: 16000,
@@ -214,6 +214,10 @@ export class SherpaONNXManager {
     try {
       const data = await fs.promises.readFile(dbPath, 'utf-8');
       this.speakerDatabase = JSON.parse(data);
+      console.log(`Speaker database loaded: ${this.speakerDatabase.speakers.length} speakers enrolled`);
+      this.speakerDatabase.speakers.forEach((s, i) => {
+        console.log(`  Speaker ${i + 1}: ${s.role} (${s.id})`);
+      });
     } catch (error) {
       console.warn('Speaker database not found, starting fresh');
       this.speakerDatabase = {
@@ -313,6 +317,7 @@ export class SherpaONNXManager {
 
   async identifySpeaker(voiceprint: number[]): Promise<string | null> {
     if (!this.speakerDatabase || this.speakerDatabase.speakers.length === 0) {
+      console.log('No speaker database available for identification');
       return null;
     }
 
@@ -338,12 +343,14 @@ export class SherpaONNXManager {
 
     for (const speaker of this.speakerDatabase.speakers) {
       const score = cosineSimilarity(voiceprint, speaker.voiceprint);
-      if (score > bestScore && score > 0.6) { // Threshold of 0.6
+      console.log(`Similarity with ${speaker.role}: ${score.toFixed(3)}`);
+      if (score > bestScore && score > 0.5) { // Lowered threshold from 0.6 to 0.5
         bestScore = score;
         bestMatch = speaker.role;
       }
     }
 
+    console.log(`Best match: ${bestMatch || 'None'} (score: ${bestScore.toFixed(3)})`);
     return bestMatch;
   }
 
