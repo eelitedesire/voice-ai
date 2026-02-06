@@ -135,7 +135,8 @@ async function main() {
     const sherpa = new SherpaONNXManager('./models');
 
     await sherpa.initializeSpeakerEmbedding();
-    await sherpa.loadSpeakerDatabase(outputPath);
+    // Load database to memory only (not to manager) during enrollment
+    await sherpa.loadSpeakerDatabase(outputPath, false);
 
     console.log('✅ Sherpa-ONNX initialized\n');
 
