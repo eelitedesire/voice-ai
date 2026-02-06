@@ -150,7 +150,8 @@ export class VADManager {
 export class SherpaONNXManager {
   private recognizer: any = null;
   private speakerEmbedding: any = null;
-  private speakerManager: any = null; // Use SpeakerEmbeddingManager instead of manual DB
+  private speakerManager: any = null; // Use SpeakerEmbeddingManager for recognition
+  private speakerDatabase: SpeakerDatabase | null = null; // Keep for enrollment script compatibility
   private modelPath: string;
 
   constructor(modelPath: string = './models') {
@@ -217,19 +218,25 @@ export class SherpaONNXManager {
   async loadSpeakerDatabase(dbPath: string): Promise<void> {
     try {
       const data = await fs.promises.readFile(dbPath, 'utf-8');
-      const db: SpeakerDatabase = JSON.parse(data);
+      this.speakerDatabase = JSON.parse(data);
 
-      console.log(`Loading speaker database: ${db.speakers.length} speakers`);
+      console.log(`Loading speaker database: ${this.speakerDatabase.speakers.length} speakers`);
 
-      // Add each speaker to the SpeakerEmbeddingManager
-      for (const speaker of db.speakers) {
-        const success = this.speakerManager.add({
+      // Add each speaker to the SpeakerEmbeddingManager using addMulti()
+      for (const speaker of this.speakerDatabase.speakers) {
+        // Convert single voiceprint to array for addMulti()
+        // This provides better speaker recognition than single sample
+        const voiceprints = Array.isArray(speaker.voiceprint)
+          ? speaker.voiceprint
+          : [speaker.voiceprint];
+
+        const success = this.speakerManager.addMulti({
           name: speaker.role, // Use role as name (e.g., "Client 1", "Client 2")
-          v: speaker.voiceprint,
+          v: voiceprints, // Array of voiceprints (even if just one for now)
         });
 
         if (success) {
-          console.log(`  ✅ Loaded ${speaker.role} (${speaker.id})`);
+          console.log(`  ✅ Loaded ${speaker.role} (${speaker.id}) - ${voiceprints.length} sample(s)`);
         } else {
           console.warn(`  ❌ Failed to load ${speaker.role}`);
         }
@@ -238,6 +245,11 @@ export class SherpaONNXManager {
       console.log(`Speaker manager now has ${this.speakerManager.getNumSpeakers()} speakers`);
     } catch (error) {
       console.warn('Speaker database not found or failed to load');
+      this.speakerDatabase = {
+        speakers: [],
+        modelVersion: '1.0.0',
+        createdAt: Date.now(),
+      };
       console.log('Speaker manager initialized with 0 speakers');
     }
   }
