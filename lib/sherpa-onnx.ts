@@ -16,8 +16,8 @@ export class VADManager {
       const config = {
         sileroVad: {
           model: path.join(this.modelPath, 'silero_vad.onnx'),
-          minSilenceDuration: 0.8,  // Require 0.8s of silence before splitting (capture complete utterances)
-          minSpeechDuration: 0.5,   // Minimum 0.5s of speech (filter out very short sounds)
+          minSilenceDuration: 0.3,  // Reduced to 0.3s to detect shorter pauses between speakers
+          minSpeechDuration: 0.4,   // Minimum 0.4s of speech
           threshold: 0.5,            // Detection threshold
           windowSize: 512,
         },
