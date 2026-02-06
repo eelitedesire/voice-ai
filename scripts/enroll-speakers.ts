@@ -135,7 +135,8 @@ async function main() {
     const sherpa = new SherpaONNXManager('./models');
 
     await sherpa.initializeSpeakerEmbedding();
-    await sherpa.loadSpeakerDatabase(outputPath);
+    // Load database to memory only (not to manager) during enrollment
+    await sherpa.loadSpeakerDatabase(outputPath, false);
 
     console.log('✅ Sherpa-ONNX initialized\n');
 
@@ -180,6 +181,28 @@ async function main() {
     console.log('  1. Run the development server: npm run dev');
     console.log('  2. Open http://localhost:3000');
     console.log('  3. Start a therapy session\n');
+
+    console.log('📊 Generating Similarity Report...');
+    
+    // Get voiceprint of Client 1 and compare it to the database
+    const v1 = await sherpa.extractVoiceprint(client1Path);
+    const report = await sherpa.generateSimilarityReport(v1);
+
+    // Look for Client 2 in Client 1's report
+    const crossScore = report.find(r => r.name === 'Client 2')?.score || 0;
+
+    console.log(`   Internal Match (Client 1 to itself): ${report.find(r => r.name === 'Client 1')?.score.toFixed(4)}`);
+    console.log(`   Cross-Similarity (Client 1 vs Client 2): ${crossScore.toFixed(4)}`);
+
+    if (crossScore > 0.60) {
+      console.warn('⚠️  WARNING: Clients sound very similar. Identification might be unreliable.');
+      console.warn('   Try re-recording with the microphone closer to each individual.');
+    } else {
+      console.log('✅ Voiceprints are distinct enough for reliable identification.\n');
+    }
+
+    // Save database
+    console.log('💾 Saving speaker database...');
 
     sherpa.cleanup();
   } catch (error) {

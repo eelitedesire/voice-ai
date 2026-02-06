@@ -1,11 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { SherpaONNXManager } from '@/lib/sherpa-onnx';
+import { SherpaONNXManager, VADManager } from '@/lib/sherpa-onnx';
 import { TranscriptEntry } from '@/types';
 import * as fs from 'fs';
 import * as path from 'path';
 import { tmpdir } from 'os';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+import * as sherpa from 'sherpa-onnx-node';
+
+const execAsync = promisify(exec);
 
 let sherpaManager: SherpaONNXManager | null = null;
+let vadManager: VADManager | null = null;
 
 async function initializeSherpa() {
   if (!sherpaManager) {
@@ -16,16 +22,55 @@ async function initializeSherpa() {
     await sherpaManager.initializeSpeakerEmbedding();
 
     const dbPath = path.join(process.cwd(), 'speaker_db.json');
+    console.log('Looking for speaker database at:', dbPath);
     if (fs.existsSync(dbPath)) {
       await sherpaManager.loadSpeakerDatabase(dbPath);
+      console.log('✅ Speaker database loaded successfully');
     } else {
-      console.warn('Speaker database not found. Speaker identification will not work.');
+      console.warn('❌ Speaker database not found at:', dbPath);
+      console.warn('Speaker identification will not work. Run: npm run enroll');
     }
   }
   return sherpaManager;
 }
 
+async function initializeVAD() {
+  if (!vadManager) {
+    const modelsPath = path.join(process.cwd(), 'models');
+    vadManager = new VADManager(modelsPath);
+    await vadManager.initialize();
+  }
+  return vadManager;
+}
+
+/**
+ * Convert WebM audio file to WAV format at 16kHz mono
+ * Required format for Sherpa-ONNX processing
+ */
+async function convertToWav(inputPath: string, outputPath: string): Promise<void> {
+  try {
+    // Use ffmpeg to convert WebM to WAV (16kHz, mono, 16-bit PCM)
+    await execAsync(
+      `ffmpeg -i "${inputPath}" -ar 16000 -ac 1 -sample_fmt s16 "${outputPath}" -y`
+    );
+  } catch (error) {
+    console.error('Failed to convert audio:', error);
+    throw new Error('Audio conversion failed. Ensure ffmpeg is installed.');
+  }
+}
+
+/**
+ * Extract audio segment from WAV file
+ */
+function extractSegment(samples: Float32Array, startSample: number, endSample: number): Float32Array {
+  return samples.slice(startSample, endSample);
+}
+
 export async function POST(request: NextRequest) {
+  const tempWebmPath = path.join(tmpdir(), `audio-${Date.now()}.webm`);
+  const tempWavPath = path.join(tmpdir(), `audio-${Date.now()}.wav`);
+  const tempSegmentPaths: string[] = [];
+
   try {
     const formData = await request.formData();
     const audioFile = formData.get('audio') as File;
@@ -37,56 +82,163 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Save audio to temporary file
-    const tempFilePath = path.join(tmpdir(), `audio-${Date.now()}.webm`);
+    // Save WebM audio to temporary file
     const audioBuffer = await audioFile.arrayBuffer();
-    await fs.promises.writeFile(tempFilePath, Buffer.from(audioBuffer));
+    await fs.promises.writeFile(tempWebmPath, Buffer.from(audioBuffer));
 
-    try {
-      // Initialize Sherpa-ONNX
-      const sherpa = await initializeSherpa();
+    // Convert WebM to WAV format (16kHz, mono)
+    await convertToWav(tempWebmPath, tempWavPath);
 
-      // Process audio file
-      // Note: This is a simplified version. In production, you'd need to:
-      // 1. Convert WebM to WAV format at 16kHz
-      // 2. Split audio into segments for speaker identification
-      // 3. Process each segment through Sherpa-ONNX
+    // Initialize Sherpa-ONNX and VAD
+    const sherpaManager = await initializeSherpa();
 
-      // For now, we'll return a mock response
-      // In production, implement actual Sherpa-ONNX processing
-      const transcript: TranscriptEntry[] = [
-        {
-          speaker: 'Client 1',
-          text: 'I feel like we need to talk about our communication issues.',
-          timestamp: Date.now() - 5000,
-        },
-        {
-          speaker: 'Client 2',
-          text: "I agree. I've been feeling disconnected from you lately.",
-          timestamp: Date.now() - 3000,
-        },
-        {
-          speaker: 'Client 1',
-          text: 'Can you tell me more about what makes you feel that way?',
-          timestamp: Date.now() - 1000,
-        },
-      ];
+    // Create a fresh VAD instance for each request to avoid state accumulation
+    const modelsPath = path.join(process.cwd(), 'models');
+    const vad = new VADManager(modelsPath);
+    await vad.initialize();
 
-      return NextResponse.json({ transcript });
-    } finally {
-      // Clean up temporary file
+    // Read the WAV file
+    const wave = sherpa.readWave(tempWavPath);
+    if (!wave || !wave.samples) {
+      throw new Error('Failed to read converted WAV file');
+    }
+
+    const samples = wave.samples instanceof Float32Array
+      ? wave.samples
+      : new Float32Array(wave.samples);
+    const sampleRate = wave.sampleRate;
+
+    // Get speech segments using VAD
+    const speechSegments = await vad.getSpeechSegments(tempWavPath);
+
+    if (speechSegments.length === 0) {
+      console.warn('No speech detected in audio');
+      return NextResponse.json({ transcript: [] });
+    }
+
+    console.log(`Detected ${speechSegments.length} speech segments`);
+    console.log(`Audio file info: ${samples.length} samples, ${(samples.length / sampleRate).toFixed(2)}s duration, ${sampleRate}Hz`);
+
+    // Process each speech segment
+    const transcript: TranscriptEntry[] = [];
+    const recordingStartTime = Date.now();
+
+    for (let i = 0; i < speechSegments.length; i++) {
+      const [segmentStart, segmentEnd] = speechSegments[i];
+      const startSample = Math.floor(segmentStart * sampleRate);
+      const endSample = Math.floor(segmentEnd * sampleRate);
+
+      console.log(`Processing segment ${i + 1}/${speechSegments.length}: ${segmentStart.toFixed(2)}s - ${segmentEnd.toFixed(2)}s (samples: ${startSample} - ${endSample})`);
+
+      // Validate segment bounds
+      if (startSample >= samples.length || endSample > samples.length) {
+        console.log(`Skipping segment ${i + 1} (out of bounds: audio has ${samples.length} samples)`);
+        continue;
+      }
+
+      // Extract audio segment
+      const segmentSamples = extractSegment(samples, startSample, endSample);
+
+      console.log(`Segment ${i + 1} extracted: ${segmentSamples.length} samples (${(segmentSamples.length / sampleRate).toFixed(2)}s)`);
+
+      // Skip segments that are too short to contain meaningful speech (less than 0.2 seconds)
+      if (segmentSamples.length < sampleRate * 0.2) {
+        console.log(`Skipping segment ${i + 1} (too short: ${(segmentSamples.length / sampleRate).toFixed(2)}s < 0.2s)`);
+        continue;
+      }
+
+      // OnlineRecognizer can handle variable-length segments, no padding needed
+      const processedSamples = segmentSamples;
+
+      // Save segment to temporary WAV file for speaker identification
+      const segmentPath = path.join(tmpdir(), `segment-${Date.now()}-${i}.wav`);
+      tempSegmentPaths.push(segmentPath);
+
+      // Write segment as WAV file using sherpa's writeWave
+      sherpa.writeWave(segmentPath, {
+        samples: processedSamples,
+        sampleRate: sampleRate,
+      });
+
       try {
-        await fs.promises.unlink(tempFilePath);
-      } catch (err) {
-        console.error('Failed to delete temp file:', err);
+        // Extract voiceprint and identify speaker
+        const voiceprint = await sherpaManager.extractVoiceprint(segmentPath);
+        const speakerRole = await sherpaManager.identifySpeaker(voiceprint);
+
+        // Streaming models need continuous context from the beginning
+        // Transcribe from start up to end of this segment
+        const audioUpToSegment = extractSegment(samples, 0, endSample);
+
+        console.log(`Transcribing from start (0s) to segment end (${segmentEnd.toFixed(2)}s) = ${(audioUpToSegment.length / sampleRate).toFixed(2)}s total`);
+
+        // Transcribe from start to end of this segment
+        const fullText = await sherpaManager.transcribeAudio(audioUpToSegment);
+
+        if (fullText && fullText.trim().length > 0) {
+          // For the first segment, use all the text
+          // For subsequent segments, extract only the new text (this is a simplification)
+          let segmentText = fullText.trim();
+
+          // If we have previous transcripts, try to extract just the new part
+          if (transcript.length > 0) {
+            const previousText = transcript.map(t => t.text).join(' ');
+            if (fullText.startsWith(previousText)) {
+              // Extract only the new text after the previous transcriptions
+              segmentText = fullText.slice(previousText.length).trim();
+            }
+          }
+
+          if (segmentText.length > 0) {
+            transcript.push({
+              speaker: speakerRole || 'Client 1',
+              text: segmentText,
+              timestamp: recordingStartTime + Math.floor(segmentStart * 1000),
+            });
+
+            console.log(`Segment ${i + 1}: [${speakerRole || 'Unknown'}] "${segmentText}"`);
+          } else {
+            console.log(`Segment ${i + 1}: No new text (duplicates previous)`);
+          }
+        } else {
+          console.log(`Segment ${i + 1}: No text transcribed`);
+        }
+      } catch (error) {
+        console.error(`Error processing segment ${i + 1}:`, error);
+        // Continue with next segment
       }
     }
+
+    console.log(`Transcription complete: ${transcript.length} entries`);
+
+    // Cleanup VAD instance
+    if (vad) {
+      vad.cleanup();
+    }
+
+    return NextResponse.json({ transcript });
+
   } catch (error) {
     console.error('Transcription error:', error);
     return NextResponse.json(
-      { error: 'Transcription failed' },
+      {
+        error: 'Transcription failed',
+        details: error instanceof Error ? error.message : String(error)
+      },
       { status: 500 }
     );
+  } finally {
+    // Clean up all temporary files
+    const filesToClean = [tempWebmPath, tempWavPath, ...tempSegmentPaths];
+
+    for (const filePath of filesToClean) {
+      try {
+        if (fs.existsSync(filePath)) {
+          await fs.promises.unlink(filePath);
+        }
+      } catch (err) {
+        console.error(`Failed to delete temp file ${filePath}:`, err);
+      }
+    }
   }
 }
 
@@ -94,5 +246,8 @@ export async function POST(request: NextRequest) {
 process.on('exit', () => {
   if (sherpaManager) {
     sherpaManager.cleanup();
+  }
+  if (vadManager) {
+    vadManager.cleanup();
   }
 });

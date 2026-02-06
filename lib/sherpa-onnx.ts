@@ -16,9 +16,9 @@ export class VADManager {
       const config = {
         sileroVad: {
           model: path.join(this.modelPath, 'silero_vad.onnx'),
-          minSilenceDuration: 0.5,  // 0.5 seconds of silence to split
-          minSpeechDuration: 0.25,  // 0.25 seconds minimum speech
-          threshold: 0.5,            // Detection threshold
+          minSilenceDuration: 0.2,
+          minSpeechDuration: 0.8,
+          threshold: 0.1,
           windowSize: 512,
         },
         sampleRate: 16000,
@@ -28,7 +28,7 @@ export class VADManager {
       };
 
       // Second parameter is buffer size in seconds
-      this.vad = new sherpa.Vad(config, 30);
+      this.vad = new sherpa.Vad(config, 60);  // Increased buffer to 60s for longer recordings
 
       if (!this.vad) {
         throw new Error('Failed to create VAD instance');
@@ -61,21 +61,18 @@ export class VADManager {
         ? wave.samples
         : new Float32Array(wave.samples);
 
-      // Process audio in chunks
-      const chunkSize = 16000; // 1 second chunks at 16kHz
-      let hasSpeech = false;
+      // Process all audio samples
+      this.vad.acceptWaveform(samples);
+      this.vad.flush();
 
-      for (let i = 0; i < samples.length; i += chunkSize) {
-        const chunk = samples.slice(i, Math.min(i + chunkSize, samples.length));
-        this.vad.acceptWaveform(chunk);
+      // Check if any speech segments were detected
+      const hasSpeech = !this.vad.isEmpty();
 
-        if (this.vad.isSpeech()) {
-          hasSpeech = true;
-          break;
-        }
+      // Clear the VAD buffer
+      while (!this.vad.isEmpty()) {
+        this.vad.pop();
       }
 
-      this.vad.flush();
       return hasSpeech;
     } catch (error) {
       console.error('Failed to detect speech:', error);
@@ -104,34 +101,37 @@ export class VADManager {
         ? wave.samples
         : new Float32Array(wave.samples);
 
-      const segments: Array<[number, number]> = [];
-      let speechStart: number | null = null;
       const sampleRate = wave.sampleRate;
 
-      // Process audio in chunks
-      const chunkSize = 512; // Window size
-      for (let i = 0; i < samples.length; i += chunkSize) {
-        const chunk = samples.slice(i, Math.min(i + chunkSize, samples.length));
-        this.vad.acceptWaveform(chunk);
-
-        const isSpeech = this.vad.isSpeech();
-
-        if (isSpeech && speechStart === null) {
-          // Speech started
-          speechStart = i / sampleRate;
-        } else if (!isSpeech && speechStart !== null) {
-          // Speech ended
-          segments.push([speechStart, i / sampleRate]);
-          speechStart = null;
-        }
-      }
-
-      // Handle case where speech continues to end
-      if (speechStart !== null) {
-        segments.push([speechStart, samples.length / sampleRate]);
-      }
-
+      // Feed all audio to VAD
+      this.vad.acceptWaveform(samples);
       this.vad.flush();
+
+      // Collect all detected speech segments
+      const segments: Array<[number, number]> = [];
+
+      while (!this.vad.isEmpty()) {
+        const segment = this.vad.front();
+        this.vad.pop();
+
+        // Debug: log segment structure
+        console.log('VAD segment:', {
+          start: segment.start,
+          samplesLength: segment.samples?.length,
+          sampleRate: sampleRate,
+        });
+
+        // segment.start and segment.samples are provided by VAD
+        // Convert to time in seconds
+        const startTime = segment.start / sampleRate;
+        const duration = segment.samples.length / sampleRate;
+        const endTime = startTime + duration;
+
+        console.log(`VAD segment time: ${startTime.toFixed(2)}s - ${endTime.toFixed(2)}s`);
+
+        segments.push([startTime, endTime]);
+      }
+
       return segments;
     } catch (error) {
       console.error('Failed to get speech segments:', error);
@@ -150,7 +150,8 @@ export class VADManager {
 export class SherpaONNXManager {
   private recognizer: any = null;
   private speakerEmbedding: any = null;
-  private speakerDatabase: SpeakerDatabase | null = null;
+  private speakerManager: any = null; // Use SpeakerEmbeddingManager for recognition
+  private speakerDatabase: SpeakerDatabase | null = null; // Keep for enrollment script compatibility
   private modelPath: string;
 
   constructor(modelPath: string = './models') {
@@ -160,6 +161,7 @@ export class SherpaONNXManager {
   async initializeRecognizer(): Promise<void> {
     try {
       // Initialize speech recognition (ASR) using OnlineRecognizer
+      // The downloaded models are streaming zipformer models for OnlineRecognizer
       const config = {
         featConfig: {
           sampleRate: 16000,
@@ -172,13 +174,14 @@ export class SherpaONNXManager {
             joiner: path.join(this.modelPath, 'joiner.onnx'),
           },
           tokens: path.join(this.modelPath, 'tokens.txt'),
-          numThreads: 2,
+          numThreads: 1,
           provider: 'cpu',
-          debug: 0,
+          debug: 1,  // Enable debug for troubleshooting
         },
       };
 
       this.recognizer = new sherpa.OnlineRecognizer(config);
+      console.log('OnlineRecognizer initialized successfully');
     } catch (error) {
       console.error('Failed to initialize Sherpa-ONNX recognizer:', error);
       throw error;
@@ -201,24 +204,60 @@ export class SherpaONNXManager {
         throw new Error('Failed to create speaker embedding extractor');
       }
 
+      // Create SpeakerEmbeddingManager with the extractor's dimension
+      this.speakerManager = new sherpa.SpeakerEmbeddingManager(this.speakerEmbedding.dim);
+
       console.log(`Speaker embedding extractor created. Dimension: ${this.speakerEmbedding.dim}`);
+      console.log(`Speaker embedding manager initialized`);
     } catch (error) {
       console.error('Failed to initialize speaker embedding:', error);
       throw error;
     }
   }
 
-  async loadSpeakerDatabase(dbPath: string): Promise<void> {
+  async loadSpeakerDatabase(dbPath: string, loadToManager: boolean = true): Promise<void> {
     try {
       const data = await fs.promises.readFile(dbPath, 'utf-8');
       this.speakerDatabase = JSON.parse(data);
+
+      console.log(`Loading speaker database: ${this.speakerDatabase.speakers.length} speakers`);
+
+      // Only load into manager if requested (for recognition, not enrollment)
+      if (loadToManager && this.speakerManager) {
+        // Add each speaker to the SpeakerEmbeddingManager using addMulti()
+        for (const speaker of this.speakerDatabase.speakers) {
+          // Convert single voiceprint to array for addMulti()
+          // This provides better speaker recognition than single sample
+          // const voiceprints = Array.isArray(speaker.voiceprint)
+          //   ? speaker.voiceprint
+          //   : [speaker.voiceprint];
+          const voiceprint = new Float32Array(speaker.voiceprint);
+
+          const success = this.speakerManager.addMulti({
+            name: speaker.role, // Use role as name (e.g., "Client 1", "Client 2")
+            v: [voiceprint], // Array of voiceprints (even if just one for now)
+          });
+
+          if (success) {
+            console.log(`  ✅ Loaded ${speaker.role} (${speaker.id})`);
+          } else {
+            console.warn(`  ❌ Failed to load ${speaker.role}`);
+          }
+        }
+
+        console.log(`Speaker manager now has ${this.speakerManager.getNumSpeakers()} speakers`);
+      } else {
+        console.log('Database loaded to memory only (not to manager)');
+      }
     } catch (error) {
-      console.warn('Speaker database not found, starting fresh');
+      console.log(error);
+      console.warn('Speaker database not found or failed to load');
       this.speakerDatabase = {
         speakers: [],
         modelVersion: '1.0.0',
         createdAt: Date.now(),
       };
+      console.log('Speaker database initialized as empty');
     }
   }
 
@@ -310,39 +349,36 @@ export class SherpaONNXManager {
   }
 
   async identifySpeaker(voiceprint: number[]): Promise<string | null> {
-    if (!this.speakerDatabase || this.speakerDatabase.speakers.length === 0) {
+    if (!this.speakerManager || this.speakerManager.getNumSpeakers() === 0) {
+      console.log('No speakers enrolled for identification');
       return null;
     }
 
-    // Calculate cosine similarity
-    const cosineSimilarity = (a: number[], b: number[]): number => {
-      if (a.length !== b.length) return 0;
+    console.log(`Searching through ${this.speakerManager.getNumSpeakers()} speakers...`);
 
-      let dotProduct = 0;
-      let normA = 0;
-      let normB = 0;
+    // Use SpeakerEmbeddingManager's search method
+    const threshold = 0.35; // Similarity threshold
+    const typedVoiceprint = new Float32Array(voiceprint);
+    const speakerName = this.speakerManager.search({
+      v: typedVoiceprint,
+      threshold: threshold,
+    });
 
-      for (let i = 0; i < a.length; i++) {
-        dotProduct += a[i] * b[i];
-        normA += a[i] * a[i];
-        normB += b[i] * b[i];
-      }
-
-      return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
-    };
-
-    let bestMatch: string | null = null;
-    let bestScore = 0;
-
-    for (const speaker of this.speakerDatabase.speakers) {
-      const score = cosineSimilarity(voiceprint, speaker.voiceprint);
-      if (score > bestScore && score > 0.6) { // Threshold of 0.6
-        bestScore = score;
-        bestMatch = speaker.role;
-      }
+    if (speakerName && speakerName !== '') {
+      console.log(`✅ Identified speaker: ${speakerName} (threshold: ${threshold})`);
+      return speakerName;
     }
 
-    return bestMatch;
+    const bestGuess = this.speakerManager.search({
+      v: typedVoiceprint,
+      threshold: 0.1, // Very loose
+    });
+
+    if (bestGuess) {
+      console.log(`⚠️ Low confidence match: ${bestGuess}. Using as best guess.`);
+      return bestGuess;
+    }
+    return null;
   }
 
   async transcribeAudio(audioBuffer: Float32Array): Promise<string> {
@@ -351,31 +387,46 @@ export class SherpaONNXManager {
     }
 
     try {
-      // Create a stream for recognition
+      // Create a stream for OnlineRecognizer
       const stream = this.recognizer.createStream();
 
-      // Accept waveform
+      // Add leading silence for left context (model needs ~128 frames of context)
+      // At 10ms frame shift, 128 frames = 1.28s
+      const leadingSilence = new Float32Array(16000 * 1.5); // 1.5s of silence
+
+      // Add trailing silence to ensure complete decoding
+      const trailingSilence = new Float32Array(16000 * 0.5); // 0.5s of silence
+
+      // Combine: leading silence + audio + trailing silence
+      const paddedBuffer = new Float32Array(
+        leadingSilence.length + audioBuffer.length + trailingSilence.length
+      );
+      paddedBuffer.set(leadingSilence, 0);
+      paddedBuffer.set(audioBuffer, leadingSilence.length);
+      paddedBuffer.set(trailingSilence, leadingSilence.length + audioBuffer.length);
+
+      console.log(`Transcription input: ${audioBuffer.length} samples + ${leadingSilence.length + trailingSilence.length} padding = ${paddedBuffer.length} total`);
+
+      // Accept waveform (feed all audio at once for a complete segment)
       stream.acceptWaveform({
+        samples: paddedBuffer,
         sampleRate: 16000,
-        samples: audioBuffer,
       });
 
-      // Add tail padding for better recognition
-      const tailPadding = new Float32Array(16000 * 0.4); // 0.4 seconds
-      stream.acceptWaveform({
-        samples: tailPadding,
-        sampleRate: 16000,
-      });
+      // Signal that input is finished
+      stream.inputFinished();
 
-      // Decode
+      // Decode in a loop while the recognizer is ready
       while (this.recognizer.isReady(stream)) {
         this.recognizer.decode(stream);
       }
 
+      // Get the final result
       const result = this.recognizer.getResult(stream);
 
-      // Free the stream
-      stream.free();
+      console.log('Transcription result:', result.text || '(empty)');
+
+      // Stream cleanup - no free() method needed, will be garbage collected
 
       return result.text || '';
     } catch (error) {
@@ -393,5 +444,31 @@ export class SherpaONNXManager {
       // Cleanup speaker embedding - no free() method needed, just set to null
       this.speakerEmbedding = null;
     }
+  }
+
+  /**
+   * Generates a similarity report for a given voiceprint against the database.
+   */
+  async generateSimilarityReport(voiceprint: number[]): Promise<Array<{ name: string, score: number }>> {
+    if (!this.speakerDatabase) return [];
+    
+    const results = [];
+    const v1 = new Float32Array(voiceprint);
+
+    for (const speaker of this.speakerDatabase.speakers) {
+      const v2 = new Float32Array(speaker.voiceprint);
+      
+      // Manual Cosine Similarity
+      let dotProduct = 0, normA = 0, normB = 0;
+      for (let i = 0; i < v1.length; i++) {
+        dotProduct += v1[i] * v2[i];
+        normA += v1[i] * v1[i];
+        normB += v2[i] * v2[i];
+      }
+      const score = dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+      results.push({ name: speaker.role, score });
+    }
+
+    return results.sort((a, b) => b.score - a.score);
   }
 }
