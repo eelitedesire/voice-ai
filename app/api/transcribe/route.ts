@@ -162,29 +162,40 @@ export async function POST(request: NextRequest) {
         const voiceprint = await sherpaManager.extractVoiceprint(segmentPath);
         const speakerRole = await sherpaManager.identifySpeaker(voiceprint);
 
-        // For better transcription, include context from surrounding audio
-        // Use 2 seconds before and 1 second after the segment
-        const contextBefore = 2.0; // seconds
-        const contextAfter = 1.0;  // seconds
+        // Streaming models need continuous context from the beginning
+        // Transcribe from start up to end of this segment
+        const audioUpToSegment = extractSegment(samples, 0, endSample);
 
-        const contextStartSample = Math.max(0, startSample - Math.floor(contextBefore * sampleRate));
-        const contextEndSample = Math.min(samples.length, endSample + Math.floor(contextAfter * sampleRate));
+        console.log(`Transcribing from start (0s) to segment end (${segmentEnd.toFixed(2)}s) = ${(audioUpToSegment.length / sampleRate).toFixed(2)}s total`);
 
-        const contextSamples = extractSegment(samples, contextStartSample, contextEndSample);
+        // Transcribe from start to end of this segment
+        const fullText = await sherpaManager.transcribeAudio(audioUpToSegment);
 
-        console.log(`Transcribing with context: segment=${(segmentSamples.length / sampleRate).toFixed(2)}s, with context=${(contextSamples.length / sampleRate).toFixed(2)}s`);
+        if (fullText && fullText.trim().length > 0) {
+          // For the first segment, use all the text
+          // For subsequent segments, extract only the new text (this is a simplification)
+          let segmentText = fullText.trim();
 
-        // Transcribe the segment with surrounding context
-        const text = await sherpaManager.transcribeAudio(contextSamples);
+          // If we have previous transcripts, try to extract just the new part
+          if (transcript.length > 0) {
+            const previousText = transcript.map(t => t.text).join(' ');
+            if (fullText.startsWith(previousText)) {
+              // Extract only the new text after the previous transcriptions
+              segmentText = fullText.slice(previousText.length).trim();
+            }
+          }
 
-        if (text && text.trim().length > 0) {
-          transcript.push({
-            speaker: speakerRole || 'Client 1', // Default to Client 1 if no match
-            text: text.trim(),
-            timestamp: recordingStartTime + Math.floor(segmentStart * 1000), // Convert segment time to absolute timestamp
-          });
+          if (segmentText.length > 0) {
+            transcript.push({
+              speaker: speakerRole || 'Client 1',
+              text: segmentText,
+              timestamp: recordingStartTime + Math.floor(segmentStart * 1000),
+            });
 
-          console.log(`Segment ${i + 1}: [${speakerRole || 'Unknown'}] "${text.trim()}"`);
+            console.log(`Segment ${i + 1}: [${speakerRole || 'Unknown'}] "${segmentText}"`);
+          } else {
+            console.log(`Segment ${i + 1}: No new text (duplicates previous)`);
+          }
         } else {
           console.log(`Segment ${i + 1}: No text transcribed`);
         }
