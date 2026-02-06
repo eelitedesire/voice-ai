@@ -60,16 +60,165 @@ async function convertToWav(inputPath: string, outputPath: string): Promise<void
 }
 
 /**
- * Extract audio segment from WAV file
+ * Extract audio segment from samples array
  */
 function extractSegment(samples: Float32Array, startSample: number, endSample: number): Float32Array {
-  return samples.slice(startSample, endSample);
+  return samples.slice(
+    Math.max(0, startSample),
+    Math.min(endSample, samples.length)
+  );
+}
+
+interface SpeakerWindow {
+  speaker: string;
+  startTime: number;
+  endTime: number;
+}
+
+interface SpeakerTurn {
+  speaker: string;
+  startTime: number;
+  endTime: number;
+  startSample: number;
+  endSample: number;
+}
+
+/**
+ * Perform windowed speaker diarization on speech regions.
+ * Splits speech into small overlapping windows, identifies the speaker
+ * for each window, then merges consecutive same-speaker windows into turns.
+ */
+async function diarizeSpeech(
+  speechSegments: Array<[number, number]>,
+  samples: Float32Array,
+  sampleRate: number,
+  manager: SherpaONNXManager,
+): Promise<SpeakerTurn[]> {
+  const WINDOW_DURATION = 3.0; // seconds per window for speaker ID
+  const WINDOW_STEP = 1.5;     // step between windows (50% overlap)
+  const MIN_AUDIO_FOR_ID = 0.5; // minimum seconds for speaker identification
+
+  const speakerWindows: SpeakerWindow[] = [];
+
+  for (const [segStart, segEnd] of speechSegments) {
+    const segStartSample = Math.floor(segStart * sampleRate);
+    const segEndSample = Math.min(Math.floor(segEnd * sampleRate), samples.length);
+    const segDuration = segEnd - segStart;
+
+    if (segDuration < MIN_AUDIO_FOR_ID) continue;
+
+    if (segDuration <= WINDOW_DURATION + 0.5) {
+      // Short segment: identify as one unit
+      const segSamples = samples.subarray(segStartSample, segEndSample);
+      try {
+        const voiceprint = await manager.extractVoiceprintFromSamples(segSamples, sampleRate);
+        const speaker = await manager.identifySpeaker(voiceprint) || 'Client 1';
+        speakerWindows.push({ speaker, startTime: segStart, endTime: segEnd });
+      } catch (e) {
+        console.warn(`Speaker ID failed for segment ${segStart.toFixed(2)}-${segEnd.toFixed(2)}:`, e);
+        speakerWindows.push({ speaker: 'Client 1', startTime: segStart, endTime: segEnd });
+      }
+    } else {
+      // Long segment: split into overlapping windows
+      const windowSamples = Math.floor(WINDOW_DURATION * sampleRate);
+      const stepSamples = Math.floor(WINDOW_STEP * sampleRate);
+
+      let lastWindowEnd = segStartSample;
+      for (let offset = segStartSample; offset + windowSamples <= segEndSample; offset += stepSamples) {
+        const windowAudio = samples.subarray(offset, offset + windowSamples);
+        try {
+          const voiceprint = await manager.extractVoiceprintFromSamples(windowAudio, sampleRate);
+          const speaker = await manager.identifySpeaker(voiceprint) || 'Client 1';
+          speakerWindows.push({
+            speaker,
+            startTime: offset / sampleRate,
+            endTime: (offset + windowSamples) / sampleRate,
+          });
+          lastWindowEnd = offset + windowSamples;
+        } catch (e) {
+          console.warn(`Speaker ID failed for window at ${(offset / sampleRate).toFixed(2)}s`);
+        }
+      }
+
+      // Handle remaining audio at end of segment
+      if (segEndSample - lastWindowEnd > MIN_AUDIO_FOR_ID * sampleRate) {
+        const tailStart = Math.max(lastWindowEnd, segEndSample - windowSamples);
+        const tailAudio = samples.subarray(tailStart, segEndSample);
+        if (tailAudio.length >= MIN_AUDIO_FOR_ID * sampleRate) {
+          try {
+            const voiceprint = await manager.extractVoiceprintFromSamples(tailAudio, sampleRate);
+            const speaker = await manager.identifySpeaker(voiceprint) || 'Client 1';
+            speakerWindows.push({
+              speaker,
+              startTime: tailStart / sampleRate,
+              endTime: segEnd,
+            });
+          } catch (e) {
+            // ignore
+          }
+        }
+      }
+    }
+  }
+
+  console.log(`Speaker identification: ${speakerWindows.length} windows analyzed`);
+
+  // Merge consecutive same-speaker windows into turns
+  const rawTurns: SpeakerTurn[] = [];
+  for (const w of speakerWindows) {
+    if (rawTurns.length > 0 && rawTurns[rawTurns.length - 1].speaker === w.speaker) {
+      // Extend existing turn
+      const turn = rawTurns[rawTurns.length - 1];
+      turn.endTime = Math.max(turn.endTime, w.endTime);
+      turn.endSample = Math.min(Math.floor(turn.endTime * sampleRate), samples.length);
+    } else {
+      rawTurns.push({
+        speaker: w.speaker,
+        startTime: w.startTime,
+        endTime: w.endTime,
+        startSample: Math.floor(w.startTime * sampleRate),
+        endSample: Math.min(Math.floor(w.endTime * sampleRate), samples.length),
+      });
+    }
+  }
+
+  // Smooth out very short turns (likely misidentifications)
+  // If a turn is < 2s and its neighbors are the same speaker, absorb it
+  const MIN_TURN_DURATION = 2.0;
+  const turns: SpeakerTurn[] = [];
+  for (let i = 0; i < rawTurns.length; i++) {
+    const turn = rawTurns[i];
+    const duration = turn.endTime - turn.startTime;
+
+    if (
+      duration < MIN_TURN_DURATION &&
+      turns.length > 0 &&
+      i < rawTurns.length - 1 &&
+      turns[turns.length - 1].speaker === rawTurns[i + 1].speaker
+    ) {
+      // Absorb short turn into previous (same-speaker neighbor)
+      turns[turns.length - 1].endTime = turn.endTime;
+      turns[turns.length - 1].endSample = turn.endSample;
+      console.log(`  Smoothed: absorbed short turn at ${turn.startTime.toFixed(2)}s-${turn.endTime.toFixed(2)}s into [${turns[turns.length - 1].speaker}]`);
+      continue;
+    }
+
+    // Merge with previous if same speaker (after smoothing above)
+    if (turns.length > 0 && turns[turns.length - 1].speaker === turn.speaker) {
+      turns[turns.length - 1].endTime = turn.endTime;
+      turns[turns.length - 1].endSample = turn.endSample;
+    } else {
+      turns.push({ ...turn });
+    }
+  }
+
+  console.log(`Diarization: ${rawTurns.length} raw turns → ${turns.length} final turns`);
+  return turns;
 }
 
 export async function POST(request: NextRequest) {
   const tempWebmPath = path.join(tmpdir(), `audio-${Date.now()}.webm`);
   const tempWavPath = path.join(tmpdir(), `audio-${Date.now()}.wav`);
-  const tempSegmentPaths: string[] = [];
 
   try {
     const formData = await request.formData();
@@ -108,112 +257,66 @@ export async function POST(request: NextRequest) {
       : new Float32Array(wave.samples);
     const sampleRate = wave.sampleRate;
 
-    // Get speech segments using VAD
+    console.log(`Audio: ${samples.length} samples, ${(samples.length / sampleRate).toFixed(2)}s, ${sampleRate}Hz`);
+
+    // Step 1: Get speech segments using VAD (chunked processing)
     const speechSegments = await vad.getSpeechSegments(tempWavPath);
+    vad.cleanup();
 
     if (speechSegments.length === 0) {
       console.warn('No speech detected in audio');
       return NextResponse.json({ transcript: [] });
     }
 
-    console.log(`Detected ${speechSegments.length} speech segments`);
-    console.log(`Audio file info: ${samples.length} samples, ${(samples.length / sampleRate).toFixed(2)}s duration, ${sampleRate}Hz`);
+    console.log(`VAD detected ${speechSegments.length} speech segments`);
 
-    // Process each speech segment
+    // Step 2: Speaker diarization - identify speakers using overlapping windows
+    const turns = await diarizeSpeech(speechSegments, samples, sampleRate, sherpaManager);
+
+    if (turns.length === 0) {
+      console.warn('No speaker turns detected');
+      return NextResponse.json({ transcript: [] });
+    }
+
+    // Step 3: Transcribe each speaker turn independently
     const transcript: TranscriptEntry[] = [];
     const recordingStartTime = Date.now();
 
-    for (let i = 0; i < speechSegments.length; i++) {
-      const [segmentStart, segmentEnd] = speechSegments[i];
-      const startSample = Math.floor(segmentStart * sampleRate);
-      const endSample = Math.floor(segmentEnd * sampleRate);
+    for (let i = 0; i < turns.length; i++) {
+      const turn = turns[i];
+      const turnSamples = extractSegment(samples, turn.startSample, turn.endSample);
 
-      console.log(`Processing segment ${i + 1}/${speechSegments.length}: ${segmentStart.toFixed(2)}s - ${segmentEnd.toFixed(2)}s (samples: ${startSample} - ${endSample})`);
-
-      // Validate segment bounds
-      if (startSample >= samples.length || endSample > samples.length) {
-        console.log(`Skipping segment ${i + 1} (out of bounds: audio has ${samples.length} samples)`);
+      // Skip very short turns
+      if (turnSamples.length < sampleRate * 0.3) {
+        console.log(`Skipping turn ${i + 1} (too short: ${(turnSamples.length / sampleRate).toFixed(2)}s)`);
         continue;
       }
 
-      // Extract audio segment
-      const segmentSamples = extractSegment(samples, startSample, endSample);
-
-      console.log(`Segment ${i + 1} extracted: ${segmentSamples.length} samples (${(segmentSamples.length / sampleRate).toFixed(2)}s)`);
-
-      // Skip segments that are too short to contain meaningful speech (less than 0.2 seconds)
-      if (segmentSamples.length < sampleRate * 0.2) {
-        console.log(`Skipping segment ${i + 1} (too short: ${(segmentSamples.length / sampleRate).toFixed(2)}s < 0.2s)`);
-        continue;
-      }
-
-      // OnlineRecognizer can handle variable-length segments, no padding needed
-      const processedSamples = segmentSamples;
-
-      // Save segment to temporary WAV file for speaker identification
-      const segmentPath = path.join(tmpdir(), `segment-${Date.now()}-${i}.wav`);
-      tempSegmentPaths.push(segmentPath);
-
-      // Write segment as WAV file using sherpa's writeWave
-      sherpa.writeWave(segmentPath, {
-        samples: processedSamples,
-        sampleRate: sampleRate,
-      });
+      console.log(`Transcribing turn ${i + 1}/${turns.length}: [${turn.speaker}] ${turn.startTime.toFixed(2)}s - ${turn.endTime.toFixed(2)}s (${(turnSamples.length / sampleRate).toFixed(2)}s)`);
 
       try {
-        // Extract voiceprint and identify speaker
-        const voiceprint = await sherpaManager.extractVoiceprint(segmentPath);
-        const speakerRole = await sherpaManager.identifySpeaker(voiceprint);
+        const text = await sherpaManager.transcribeAudio(turnSamples);
 
-        // Streaming models need continuous context from the beginning
-        // Transcribe from start up to end of this segment
-        const audioUpToSegment = extractSegment(samples, 0, endSample);
+        if (text && text.trim().length > 0) {
+          transcript.push({
+            speaker: (turn.speaker === 'Client 1' || turn.speaker === 'Client 2')
+              ? turn.speaker
+              : 'Client 1',
+            text: text.trim(),
+            timestamp: recordingStartTime + Math.floor(turn.startTime * 1000),
+          });
 
-        console.log(`Transcribing from start (0s) to segment end (${segmentEnd.toFixed(2)}s) = ${(audioUpToSegment.length / sampleRate).toFixed(2)}s total`);
-
-        // Transcribe from start to end of this segment
-        const fullText = await sherpaManager.transcribeAudio(audioUpToSegment);
-
-        if (fullText && fullText.trim().length > 0) {
-          // For the first segment, use all the text
-          // For subsequent segments, extract only the new text (this is a simplification)
-          let segmentText = fullText.trim();
-
-          // If we have previous transcripts, try to extract just the new part
-          if (transcript.length > 0) {
-            const previousText = transcript.map(t => t.text).join(' ');
-            if (fullText.startsWith(previousText)) {
-              // Extract only the new text after the previous transcriptions
-              segmentText = fullText.slice(previousText.length).trim();
-            }
-          }
-
-          if (segmentText.length > 0) {
-            transcript.push({
-              speaker: speakerRole || 'Client 1',
-              text: segmentText,
-              timestamp: recordingStartTime + Math.floor(segmentStart * 1000),
-            });
-
-            console.log(`Segment ${i + 1}: [${speakerRole || 'Unknown'}] "${segmentText}"`);
-          } else {
-            console.log(`Segment ${i + 1}: No new text (duplicates previous)`);
-          }
+          const preview = text.trim().length > 80 ? text.trim().substring(0, 80) + '...' : text.trim();
+          console.log(`Turn ${i + 1}: [${turn.speaker}] "${preview}"`);
         } else {
-          console.log(`Segment ${i + 1}: No text transcribed`);
+          console.log(`Turn ${i + 1}: No text transcribed`);
         }
       } catch (error) {
-        console.error(`Error processing segment ${i + 1}:`, error);
-        // Continue with next segment
+        console.error(`Error transcribing turn ${i + 1}:`, error);
       }
     }
 
-    console.log(`Transcription complete: ${transcript.length} entries`);
-
-    // Cleanup VAD instance
-    if (vad) {
-      vad.cleanup();
-    }
+    console.log(`Transcription complete: ${transcript.length} entries from ${turns.length} speaker turns`);
 
     return NextResponse.json({ transcript });
 
@@ -227,10 +330,8 @@ export async function POST(request: NextRequest) {
       { status: 500 }
     );
   } finally {
-    // Clean up all temporary files
-    const filesToClean = [tempWebmPath, tempWavPath, ...tempSegmentPaths];
-
-    for (const filePath of filesToClean) {
+    // Clean up temporary files
+    for (const filePath of [tempWebmPath, tempWavPath]) {
       try {
         if (fs.existsSync(filePath)) {
           await fs.promises.unlink(filePath);
