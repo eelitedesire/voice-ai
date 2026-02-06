@@ -16,9 +16,9 @@ export class VADManager {
       const config = {
         sileroVad: {
           model: path.join(this.modelPath, 'silero_vad.onnx'),
-          minSilenceDuration: 0.2,
-          minSpeechDuration: 0.8,
-          threshold: 0.1,
+          minSilenceDuration: 0.15,
+          minSpeechDuration: 0.25,
+          threshold: 0.35,
           windowSize: 512,
         },
         sampleRate: 16000,
@@ -28,7 +28,7 @@ export class VADManager {
       };
 
       // Second parameter is buffer size in seconds
-      this.vad = new sherpa.Vad(config, 60);  // Increased buffer to 60s for longer recordings
+      this.vad = new sherpa.Vad(config, 200);
 
       if (!this.vad) {
         throw new Error('Failed to create VAD instance');
@@ -83,6 +83,10 @@ export class VADManager {
   /**
    * Get speech segments from audio file
    * Returns array of [start_time, end_time] in seconds
+   *
+   * Uses chunked processing: feeds audio in windowSize chunks and pops
+   * completed segments as they become available. This avoids circular
+   * buffer corruption that occurs when feeding all samples at once.
    */
   async getSpeechSegments(audioPath: string): Promise<Array<[number, number]>> {
     if (!this.vad) {
@@ -102,36 +106,36 @@ export class VADManager {
         : new Float32Array(wave.samples);
 
       const sampleRate = wave.sampleRate;
-
-      // Feed all audio to VAD
-      this.vad.acceptWaveform(samples);
-      this.vad.flush();
-
-      // Collect all detected speech segments
+      const windowSize = 512; // Must match config
       const segments: Array<[number, number]> = [];
 
-      while (!this.vad.isEmpty()) {
-        const segment = this.vad.front();
-        this.vad.pop();
+      const popSegments = () => {
+        while (!this.vad.isEmpty()) {
+          const segment = this.vad.front();
+          this.vad.pop();
 
-        // Debug: log segment structure
-        console.log('VAD segment:', {
-          start: segment.start,
-          samplesLength: segment.samples?.length,
-          sampleRate: sampleRate,
-        });
+          const startTime = segment.start / sampleRate;
+          const duration = segment.samples.length / sampleRate;
+          const endTime = startTime + duration;
 
-        // segment.start and segment.samples are provided by VAD
-        // Convert to time in seconds
-        const startTime = segment.start / sampleRate;
-        const duration = segment.samples.length / sampleRate;
-        const endTime = startTime + duration;
+          console.log(`VAD segment: ${startTime.toFixed(2)}s - ${endTime.toFixed(2)}s (${duration.toFixed(2)}s)`);
+          segments.push([startTime, endTime]);
+        }
+      };
 
-        console.log(`VAD segment time: ${startTime.toFixed(2)}s - ${endTime.toFixed(2)}s`);
-
-        segments.push([startTime, endTime]);
+      // Feed audio in windowSize chunks (canonical sherpa-onnx pattern)
+      for (let i = 0; i + windowSize <= samples.length; i += windowSize) {
+        const chunk = samples.subarray(i, i + windowSize);
+        this.vad.acceptWaveform(chunk);
+        // Pop completed segments as they become available
+        popSegments();
       }
 
+      // Flush remaining audio and pop final segments
+      this.vad.flush();
+      popSegments();
+
+      console.log(`VAD total: ${segments.length} speech segments detected`);
       return segments;
     } catch (error) {
       console.error('Failed to get speech segments:', error);
@@ -271,6 +275,31 @@ export class SherpaONNXManager {
       JSON.stringify(this.speakerDatabase, null, 2),
       'utf-8'
     );
+  }
+
+  async extractVoiceprintFromSamples(samples: Float32Array, sampleRate: number = 16000): Promise<number[]> {
+    if (!this.speakerEmbedding) {
+      throw new Error('Speaker embedding model not initialized');
+    }
+
+    const stream = this.speakerEmbedding.createStream();
+    if (!stream) {
+      throw new Error('Failed to create speaker embedding stream');
+    }
+
+    stream.acceptWaveform({ sampleRate, samples });
+    stream.inputFinished();
+
+    if (!this.speakerEmbedding.isReady(stream)) {
+      throw new Error('Speaker embedding stream is not ready - audio too short');
+    }
+
+    const embedding = this.speakerEmbedding.compute(stream);
+    if (!embedding || embedding.length === 0) {
+      throw new Error('Failed to compute speaker embedding');
+    }
+
+    return Array.from(embedding);
   }
 
   async extractVoiceprint(audioPath: string): Promise<number[]> {
