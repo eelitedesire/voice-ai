@@ -47,3 +47,18 @@ export interface SpeakerDatabase {
   modelVersion: string;
   createdAt: number;
 }
+
+// Streaming transcription types
+
+/** Messages sent from server to client over WebSocket */
+export type StreamingServerMessage =
+  | { type: 'partial'; text: string; timestamp: number }
+  | { type: 'final'; text: string; speaker: string; timestamp: number }
+  | { type: 'vad'; isSpeaking: boolean; timestamp: number }
+  | { type: 'ready' }
+  | { type: 'error'; message: string };
+
+/** Messages sent from client to server over WebSocket */
+export type StreamingClientMessage =
+  | { type: 'config'; sampleRate: number }
+  | { type: 'stop' };

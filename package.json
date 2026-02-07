@@ -13,36 +13,38 @@
     "check-addon": "bash scripts/run-with-addon.sh tsx scripts/check-addon.ts"
   },
   "dependencies": {
+    "@ai-sdk/groq": "^2.0.0",
+    "@types/ws": "^8.18.1",
+    "ai": "^6.0.69",
+    "groq-sdk": "^0.8.0",
     "next": "15.5.11",
+    "node-record-lpcm16": "^1.0.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "ai": "^6.0.69",
-    "@ai-sdk/groq": "^2.0.0",
-    "groq-sdk": "^0.8.0",
     "sherpa-onnx-node": "1.12.23",
-    "zod": "^3.24.1",
-    "node-record-lpcm16": "^1.0.1",
-    "wav": "^1.0.2"
+    "wav": "^1.0.2",
+    "ws": "^8.19.0",
+    "zod": "^3.24.1"
   },
   "devDependencies": {
     "@types/node": "^22",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@types/wav": "^1.0.4",
-    "typescript": "^5",
+    "autoprefixer": "^10.4.20",
     "eslint": "^9",
     "eslint-config-next": "15.5.11",
-    "tailwindcss": "^3.4.1",
     "postcss": "^8",
-    "autoprefixer": "^10.4.20",
-    "tsx": "^4.19.2"
+    "tailwindcss": "^3.4.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5"
   },
   "optionalDependencies": {
     "sherpa-onnx-darwin-arm64": "1.12.23",
     "sherpa-onnx-darwin-x64": "1.12.23",
-    "sherpa-onnx-linux-x64": "1.12.23",
     "sherpa-onnx-linux-arm64": "1.12.23",
-    "sherpa-onnx-win-x64": "1.12.23",
-    "sherpa-onnx-win-ia32": "1.12.23"
+    "sherpa-onnx-linux-x64": "1.12.23",
+    "sherpa-onnx-win-ia32": "1.12.23",
+    "sherpa-onnx-win-x64": "1.12.23"
   }
 }

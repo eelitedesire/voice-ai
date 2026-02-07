@@ -1,0 +1,126 @@
+import { createServer } from 'http';
+import { parse } from 'url';
+import next from 'next';
+import { WebSocketServer, WebSocket } from 'ws';
+import { VADSegmentedTranscriber, StreamingEvent } from './lib/streaming-transcription';
+
+const dev = process.env.NODE_ENV !== 'production';
+const hostname = process.env.HOSTNAME || 'localhost';
+const port = parseInt(process.env.PORT || '3000', 10);
+
+const app = next({ dev, hostname, port });
+const handle = app.getRequestHandler();
+
+app.prepare().then(() => {
+  const server = createServer(async (req, res) => {
+    try {
+      const parsedUrl = parse(req.url!, true);
+      await handle(req, res, parsedUrl);
+    } catch (err) {
+      console.error('Error handling request:', err);
+      res.statusCode = 500;
+      res.end('Internal Server Error');
+    }
+  });
+
+  // WebSocket server for streaming transcription
+  const wss = new WebSocketServer({
+    server,
+    path: '/ws/transcribe',
+  });
+
+  wss.on('connection', (ws: WebSocket) => {
+    console.log('[WS] Client connected for streaming transcription');
+
+    let transcriber: VADSegmentedTranscriber | null = null;
+    let initPromise: Promise<void> | null = null;
+
+    // Initialize transcriber on connection
+    transcriber = new VADSegmentedTranscriber();
+    initPromise = transcriber.initialize().then(() => {
+      // Forward transcriber events to WebSocket
+      transcriber!.on('event', (event: StreamingEvent) => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify(event));
+        }
+      });
+    }).catch((err) => {
+      console.error('[WS] Transcriber init failed:', err);
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: 'error',
+          message: 'Failed to initialize transcription engine',
+        }));
+        ws.close();
+      }
+    });
+
+    ws.on('message', async (data: Buffer | ArrayBuffer | Buffer[], isBinary: boolean) => {
+      // Wait for initialization
+      if (initPromise) {
+        await initPromise;
+        initPromise = null;
+      }
+
+      if (!transcriber) return;
+
+      if (isBinary) {
+        // Binary message = PCM audio data (Float32Array)
+        const buffer = data instanceof Buffer ? data : Buffer.from(data as ArrayBuffer);
+        const samples = new Float32Array(
+          buffer.buffer,
+          buffer.byteOffset,
+          buffer.byteLength / Float32Array.BYTES_PER_ELEMENT
+        );
+        transcriber.processAudio(samples);
+      } else {
+        // Text message = control command
+        try {
+          const msg = JSON.parse(data.toString());
+
+          switch (msg.type) {
+            case 'stop':
+              transcriber.finalize();
+              break;
+
+            case 'config':
+              // Config message (e.g., sample rate) - currently fixed at 16kHz
+              console.log('[WS] Config:', msg);
+              break;
+
+            default:
+              console.warn('[WS] Unknown message type:', msg.type);
+          }
+        } catch {
+          console.warn('[WS] Failed to parse text message');
+        }
+      }
+    });
+
+    ws.on('close', () => {
+      console.log('[WS] Client disconnected');
+      if (transcriber) {
+        try {
+          transcriber.finalize();
+        } catch {
+          // ignore finalization errors on disconnect
+        }
+        transcriber.cleanup();
+        transcriber = null;
+      }
+    });
+
+    ws.on('error', (err) => {
+      console.error('[WS] Error:', err);
+      if (transcriber) {
+        transcriber.cleanup();
+        transcriber = null;
+      }
+    });
+  });
+
+  server.listen(port, () => {
+    console.log(`> Ready on http://${hostname}:${port}`);
+    console.log(`> WebSocket streaming at ws://${hostname}:${port}/ws/transcribe`);
+  });
+});
