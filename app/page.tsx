@@ -15,6 +15,7 @@ export default function Home() {
   const [supervisorPrompt, setSupervisorPrompt] = useState('');
   const [isTherapistTyping, setIsTherapistTyping] = useState(false);
   const [speakers, setSpeakers] = useState<string[]>([]);
+  const [partialTranscript, setPartialTranscript] = useState('');
 
   // Fetch enrolled speakers on mount
   useEffect(() => {
@@ -140,6 +141,7 @@ export default function Home() {
     setTranscript([]);
     setChatMessages([]);
     setShowAnalysis(false);
+    setPartialTranscript('');
   };
 
   return (
@@ -172,6 +174,7 @@ export default function Home() {
           <SessionRecorder
             onTranscriptUpdate={handleTranscriptUpdate}
             onSessionComplete={handleSessionComplete}
+            onPartialTranscript={setPartialTranscript}
           />
         </div>
 
@@ -184,6 +187,7 @@ export default function Home() {
             onSendMessage={handleSendMessage}
             speakers={speakers}
             isTherapistTyping={isTherapistTyping}
+            partialTranscript={partialTranscript}
           />
         </div>
 

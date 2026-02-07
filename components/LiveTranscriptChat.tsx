@@ -9,6 +9,7 @@ interface LiveTranscriptChatProps {
   onSendMessage: (message: ChatMessage) => void;
   speakers: string[];
   isTherapistTyping: boolean;
+  partialTranscript?: string;
 }
 
 const THERAPIST_COLOR = { bg: 'bg-emerald-50', text: 'text-emerald-900', border: 'border-emerald-200' };
@@ -28,6 +29,7 @@ export default function LiveTranscriptChat({
   onSendMessage,
   speakers,
   isTherapistTyping,
+  partialTranscript,
 }: LiveTranscriptChatProps) {
   const [inputText, setInputText] = useState('');
   const [selectedSpeaker, setSelectedSpeaker] = useState('');
@@ -155,6 +157,19 @@ export default function LiveTranscriptChat({
             </div>
           );
         })}
+
+        {/* Partial streaming transcript */}
+        {partialTranscript && (
+          <div className="flex items-start gap-2">
+            <div className="flex-shrink-0 w-2 h-2 mt-2.5 rounded-full bg-green-400 animate-pulse" />
+            <div className="px-3 py-2 rounded-lg border border-dashed border-gray-300 bg-gray-50 text-gray-600 max-w-[85%]">
+              <div className="flex items-center gap-2 mb-0.5">
+                <span className="text-[10px] opacity-50 italic">transcribing...</span>
+              </div>
+              <p className="text-sm italic">{partialTranscript}</p>
+            </div>
+          </div>
+        )}
 
         {/* Typing indicator */}
         {isTherapistTyping && (

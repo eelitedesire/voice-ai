@@ -2,93 +2,147 @@
 
 import { useState, useRef, useCallback } from 'react';
 import { TranscriptEntry } from '@/types';
-import { AudioRecorder } from '@/lib/audio-utils';
+import { AudioRecorder, StreamingAudioCapture, StreamingAudioEvent } from '@/lib/audio-utils';
 
 interface SessionRecorderProps {
   onTranscriptUpdate: (entry: TranscriptEntry) => void;
   onSessionComplete: (transcript: TranscriptEntry[]) => void;
+  onPartialTranscript?: (text: string) => void;
+  onVadStatus?: (isSpeaking: boolean) => void;
 }
 
 export default function SessionRecorder({
   onTranscriptUpdate,
   onSessionComplete,
+  onPartialTranscript,
+  onVadStatus,
 }: SessionRecorderProps) {
   const [isRecording, setIsRecording] = useState(false);
-  const [isInitialized, setIsInitialized] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [isConnected, setIsConnected] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
 
-  const audioRecorder = useRef<AudioRecorder | null>(null);
+  const streamingCapture = useRef<StreamingAudioCapture | null>(null);
   const transcript = useRef<TranscriptEntry[]>([]);
-  const sessionStartTime = useRef<number>(0);
-  const audioChunksRef = useRef<Blob[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const initialize = async () => {
-    try {
-      setError(null);
-      audioRecorder.current = new AudioRecorder();
-      await audioRecorder.current.initialize();
-      setIsInitialized(true);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to initialize microphone');
-    }
-  };
+  const handleStreamingEvent = useCallback((event: StreamingAudioEvent) => {
+    switch (event.type) {
+      case 'connected':
+        setIsConnected(true);
+        break;
 
-  const startRecording = async () => {
-    if (!isInitialized) {
-      await initialize();
-    }
+      case 'disconnected':
+        setIsConnected(false);
+        break;
 
+      case 'transcript_partial':
+        onPartialTranscript?.(event.text);
+        break;
+
+      case 'transcript_final': {
+        const entry: TranscriptEntry = {
+          speaker: event.speaker,
+          text: event.text,
+          timestamp: event.timestamp,
+        };
+        transcript.current.push(entry);
+        onTranscriptUpdate(entry);
+        // Clear partial when final arrives
+        onPartialTranscript?.('');
+        break;
+      }
+
+      case 'vad':
+        setIsSpeaking(event.isSpeaking);
+        onVadStatus?.(event.isSpeaking);
+        break;
+
+      case 'error':
+        setError(event.message);
+        break;
+    }
+  }, [onTranscriptUpdate, onPartialTranscript, onVadStatus]);
+
+  const startStreamingRecording = async () => {
     try {
       setError(null);
       transcript.current = [];
-      sessionStartTime.current = Date.now();
-      audioChunksRef.current = [];
+
+      streamingCapture.current = new StreamingAudioCapture(handleStreamingEvent);
+      await streamingCapture.current.start();
+
+      setIsRecording(true);
+      setIsStreaming(true);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to start streaming';
+      // Fall back to batch mode if WebSocket fails
+      if (msg.includes('WebSocket')) {
+        console.warn('Streaming unavailable, falling back to batch mode');
+        await startBatchRecording();
+      } else {
+        setError(msg);
+      }
+    }
+  };
+
+  // Batch recording fallback (original implementation)
+  const audioRecorder = useRef<AudioRecorder | null>(null);
+  const [isInitialized, setIsInitialized] = useState(false);
+
+  const initializeBatch = async () => {
+    audioRecorder.current = new AudioRecorder();
+    await audioRecorder.current.initialize();
+    setIsInitialized(true);
+  };
+
+  const startBatchRecording = async () => {
+    try {
+      setError(null);
+      transcript.current = [];
+
+      if (!isInitialized) {
+        await initializeBatch();
+      }
 
       audioRecorder.current?.start();
       setIsRecording(true);
-
-      // Start real-time transcription processing
-      startTranscriptionStream();
+      setIsStreaming(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to start recording');
     }
   };
 
-  const startTranscriptionStream = useCallback(async () => {
-    // Send audio chunks to the server for real-time transcription
-    const processChunk = async () => {
-      if (!isRecording || !audioRecorder.current) return;
-
-      try {
-        const stream = audioRecorder.current.getAudioStream();
-        if (!stream) return;
-
-        // Create a WebSocket or use fetch to stream audio to server
-        // For now, we'll use periodic polling approach
-        // In production, use WebSocket for true real-time streaming
-
-        setTimeout(processChunk, 1000); // Process every second
-      } catch (err) {
-        console.error('Transcription error:', err);
-      }
-    };
-
-    processChunk();
-  }, [isRecording]);
+  const startRecording = async () => {
+    // Try streaming first, fall back to batch
+    await startStreamingRecording();
+  };
 
   const stopRecording = async () => {
     try {
       setError(null);
-      const audioBlob = await audioRecorder.current!.stop();
-      setIsRecording(false);
 
-      // Send final audio to server for processing
-      await processAudioSession(audioBlob);
+      if (isStreaming && streamingCapture.current) {
+        // Streaming mode: stop capture, server will finalize
+        streamingCapture.current.stop();
+        streamingCapture.current = null;
+        setIsRecording(false);
+        setIsStreaming(false);
+        setIsConnected(false);
+        setIsSpeaking(false);
+        onPartialTranscript?.('');
 
-      // Notify parent component
-      onSessionComplete(transcript.current);
+        onSessionComplete(transcript.current);
+      } else if (audioRecorder.current) {
+        // Batch mode: stop recording, send to server
+        const audioBlob = await audioRecorder.current.stop();
+        setIsRecording(false);
+
+        await processAudioSession(audioBlob);
+        onSessionComplete(transcript.current);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to stop recording');
     }
@@ -111,7 +165,6 @@ export default function SessionRecorder({
 
       const result = await response.json();
 
-      // Update transcript with identified speakers
       if (result.transcript) {
         result.transcript.forEach((entry: TranscriptEntry) => {
           transcript.current.push(entry);
@@ -133,14 +186,12 @@ export default function SessionRecorder({
     try {
       setError(null);
       transcript.current = [];
-      sessionStartTime.current = Date.now();
 
       console.log('Processing uploaded file:', file.name, file.type, file.size);
 
       await processAudioSession(file);
       onSessionComplete(transcript.current);
 
-      // Reset file input
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
@@ -206,9 +257,40 @@ export default function SessionRecorder({
       </div>
 
       {isRecording && (
-        <div className="flex items-center gap-2 text-red-500">
-          <div className="w-3 h-3 bg-red-500 rounded-full animate-pulse"></div>
-          <span className="font-medium">Live Recording</span>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 text-red-500">
+            <div className="w-3 h-3 bg-red-500 rounded-full animate-pulse"></div>
+            <span className="font-medium">Live Recording</span>
+          </div>
+
+          {isStreaming && (
+            <div className="flex items-center gap-2">
+              <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-400' : 'bg-yellow-400 animate-pulse'}`}></div>
+              <span className="text-sm text-gray-500">
+                {isConnected ? 'Streaming' : 'Connecting...'}
+              </span>
+            </div>
+          )}
+
+          {isStreaming && isSpeaking && (
+            <div className="flex items-center gap-1">
+              {[1, 2, 3].map(i => (
+                <div
+                  key={i}
+                  className="w-1 bg-green-500 rounded-full animate-pulse"
+                  style={{
+                    height: `${8 + i * 4}px`,
+                    animationDelay: `${i * 100}ms`,
+                  }}
+                />
+              ))}
+              <span className="text-sm text-green-600 ml-1">Speaking</span>
+            </div>
+          )}
+
+          {isStreaming && !isConnected && (
+            <span className="text-xs text-gray-400">(batch fallback)</span>
+          )}
         </div>
       )}
 
@@ -220,7 +302,7 @@ export default function SessionRecorder({
       )}
 
       <div className="text-sm text-gray-500 text-center max-w-md">
-        <p>Use "Start Session" to record live, or "Upload Test File" to test with a pre-recorded WAV/WebM file.</p>
+        <p>Use "Start Session" to record live with streaming transcription, or "Upload Test File" to test with a pre-recorded WAV/WebM file.</p>
       </div>
     </div>
   );
