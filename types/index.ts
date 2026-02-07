@@ -19,6 +19,15 @@ export interface TherapeuticAnalysis {
   concerns?: string[];
 }
 
+export interface ChatMessage {
+  id: string;
+  role: 'speaker' | 'therapist';
+  speaker?: string;          // name from dropdown (for role=speaker)
+  text: string;
+  timestamp: number;
+  kind?: 'message' | 'analysis-summary';  // distinguishes regular chat from analysis posts
+}
+
 export interface PromptTemplate {
   id: string;
   name: string;
