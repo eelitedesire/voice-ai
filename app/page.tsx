@@ -5,6 +5,7 @@ import { TranscriptEntry, TherapeuticAnalysis } from '@/types';
 import SessionRecorder from '@/components/SessionRecorder';
 import TranscriptDisplay from '@/components/TranscriptDisplay';
 import AnalysisPanel from '@/components/AnalysisPanel';
+import SpeakerEnrollment from '@/components/SpeakerEnrollment';
 
 export default function Home() {
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
@@ -69,7 +70,7 @@ export default function Home() {
 
         {/* Analysis Panel */}
         {showAnalysis && (
-          <div className="bg-white rounded-xl shadow-lg p-6">
+          <div className="bg-white rounded-xl shadow-lg p-6 mb-8">
             <AnalysisPanel
               transcript={transcript}
               onAnalysisComplete={handleAnalysisComplete}
@@ -77,62 +78,11 @@ export default function Home() {
           </div>
         )}
 
-        {/* Setup Instructions */}
-        {transcript.length === 0 && (
-          <div className="bg-white rounded-xl shadow-lg p-6">
-            <h2 className="text-2xl font-semibold mb-4">Getting Started</h2>
-            <div className="space-y-4 text-gray-700">
-              <div className="flex items-start gap-3">
-                <span className="flex-shrink-0 w-8 h-8 bg-blue-500 text-white rounded-full flex items-center justify-center font-bold">
-                  1
-                </span>
-                <div>
-                  <h3 className="font-semibold">Download Models</h3>
-                  <p className="text-sm">
-                    Run <code className="bg-gray-100 px-2 py-1 rounded">npm run download-models</code> to download Sherpa-ONNX models
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex items-start gap-3">
-                <span className="flex-shrink-0 w-8 h-8 bg-blue-500 text-white rounded-full flex items-center justify-center font-bold">
-                  2
-                </span>
-                <div>
-                  <h3 className="font-semibold">Enroll Speakers</h3>
-                  <p className="text-sm">
-                    Run <code className="bg-gray-100 px-2 py-1 rounded">npm run enroll</code> with therapist and client audio files
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex items-start gap-3">
-                <span className="flex-shrink-0 w-8 h-8 bg-blue-500 text-white rounded-full flex items-center justify-center font-bold">
-                  3
-                </span>
-                <div>
-                  <h3 className="font-semibold">Set API Key</h3>
-                  <p className="text-sm">
-                    Copy <code className="bg-gray-100 px-2 py-1 rounded">.env.local.template</code> to{' '}
-                    <code className="bg-gray-100 px-2 py-1 rounded">.env.local</code> and add your Groq API key
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex items-start gap-3">
-                <span className="flex-shrink-0 w-8 h-8 bg-green-500 text-white rounded-full flex items-center justify-center font-bold">
-                  ✓
-                </span>
-                <div>
-                  <h3 className="font-semibold">Start Recording</h3>
-                  <p className="text-sm">
-                    Click "Start Session" above to begin a therapeutic session
-                  </p>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
+        {/* Speaker Enrollment */}
+        <div className="bg-white rounded-xl shadow-lg p-6 mb-8">
+          <h2 className="text-2xl font-semibold mb-4">Enroll Speakers</h2>
+          <SpeakerEnrollment />
+        </div>
       </div>
     </main>
   );

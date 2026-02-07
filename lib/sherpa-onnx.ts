@@ -230,22 +230,19 @@ export class SherpaONNXManager {
       if (loadToManager && this.speakerManager) {
         // Add each speaker to the SpeakerEmbeddingManager using addMulti()
         for (const speaker of this.speakerDatabase.speakers) {
-          // Convert single voiceprint to array for addMulti()
-          // This provides better speaker recognition than single sample
-          // const voiceprints = Array.isArray(speaker.voiceprint)
-          //   ? speaker.voiceprint
-          //   : [speaker.voiceprint];
           const voiceprint = new Float32Array(speaker.voiceprint);
+          // Use name field if available, fall back to role for backward compat
+          const displayName = speaker.name || speaker.role;
 
           const success = this.speakerManager.addMulti({
-            name: speaker.role, // Use role as name (e.g., "Client 1", "Client 2")
-            v: [voiceprint], // Array of voiceprints (even if just one for now)
+            name: displayName,
+            v: [voiceprint],
           });
 
           if (success) {
-            console.log(`  ✅ Loaded ${speaker.role} (${speaker.id})`);
+            console.log(`  ✅ Loaded ${displayName} (${speaker.id})`);
           } else {
-            console.warn(`  ❌ Failed to load ${speaker.role}`);
+            console.warn(`  ❌ Failed to load ${displayName}`);
           }
         }
 
@@ -354,7 +351,7 @@ export class SherpaONNXManager {
 
   async enrollSpeaker(
     speakerId: string,
-    role: 'Client 1' | 'Client 2',
+    name: string,
     audioPath: string
   ): Promise<void> {
     if (!this.speakerDatabase) {
@@ -365,7 +362,8 @@ export class SherpaONNXManager {
 
     const profile: SpeakerProfile = {
       id: speakerId,
-      role,
+      name,
+      role: name,
       voiceprint,
     };
 
