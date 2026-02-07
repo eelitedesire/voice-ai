@@ -17,7 +17,7 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "ai": "^6.0.69",
-    "@ai-sdk/groq": "^1.0.8",
+    "@ai-sdk/groq": "^2.0.0",
     "groq-sdk": "^0.8.0",
     "sherpa-onnx-node": "1.12.23",
     "zod": "^3.24.1",
