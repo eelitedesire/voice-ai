@@ -66,12 +66,12 @@ app.prepare().then(() => {
 
       if (isBinary) {
         // Binary message = PCM audio data (Float32Array)
+        // Copy into an aligned ArrayBuffer since the ws Buffer's byteOffset
+        // may not be a multiple of 4 (Float32 alignment requirement).
         const buffer = data instanceof Buffer ? data : Buffer.from(data as ArrayBuffer);
-        const samples = new Float32Array(
-          buffer.buffer,
-          buffer.byteOffset,
-          buffer.byteLength / Float32Array.BYTES_PER_ELEMENT
-        );
+        const aligned = new ArrayBuffer(buffer.byteLength);
+        new Uint8Array(aligned).set(new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength));
+        const samples = new Float32Array(aligned);
         transcriber.processAudio(samples);
       } else {
         // Text message = control command
