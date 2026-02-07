@@ -79,3 +79,185 @@ export function convertBlobToWav(blob: Blob): Promise<ArrayBuffer> {
     reader.readAsArrayBuffer(blob);
   });
 }
+
+export type StreamingAudioEvent =
+  | { type: 'transcript_partial'; text: string; timestamp: number }
+  | { type: 'transcript_final'; text: string; speaker: string; timestamp: number }
+  | { type: 'vad'; isSpeaking: boolean }
+  | { type: 'connected' }
+  | { type: 'disconnected' }
+  | { type: 'error'; message: string };
+
+/**
+ * Streaming audio capture that sends raw PCM to a WebSocket for real-time
+ * transcription. Uses AudioWorklet for low-latency capture and downsampling.
+ *
+ * Flow:
+ *   mic → AudioWorklet (downsample to 16kHz) → WebSocket → server ASR
+ *   server → WebSocket → partial/final transcript events → callback
+ */
+export class StreamingAudioCapture {
+  private audioContext: AudioContext | null = null;
+  private workletNode: AudioWorkletNode | null = null;
+  private mediaStream: MediaStream | null = null;
+  private ws: WebSocket | null = null;
+  private onEvent: ((event: StreamingAudioEvent) => void) | null = null;
+  private reconnectAttempts = 0;
+  private maxReconnectAttempts = 3;
+  private isActive = false;
+
+  constructor(onEvent: (event: StreamingAudioEvent) => void) {
+    this.onEvent = onEvent;
+  }
+
+  async start(): Promise<void> {
+    try {
+      // Get microphone
+      this.mediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
+
+      // Set up AudioContext + WorkletNode
+      this.audioContext = new AudioContext({ sampleRate: 48000 });
+      await this.audioContext.audioWorklet.addModule('/audio-worklet-processor.js');
+
+      const source = this.audioContext.createMediaStreamSource(this.mediaStream);
+      this.workletNode = new AudioWorkletNode(this.audioContext, 'pcm-processor');
+
+      // Connect WebSocket
+      await this.connectWebSocket();
+
+      // Forward PCM chunks from worklet to WebSocket
+      this.workletNode.port.onmessage = (event) => {
+        if (event.data.type === 'audio' && this.ws?.readyState === WebSocket.OPEN) {
+          this.ws.send(event.data.samples);
+        }
+      };
+
+      // Wire up audio graph
+      source.connect(this.workletNode);
+      // Don't connect to destination (we don't want playback)
+
+      this.isActive = true;
+      this.reconnectAttempts = 0;
+    } catch (error) {
+      this.cleanup();
+      throw error;
+    }
+  }
+
+  private async connectWebSocket(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${protocol}//${window.location.host}/ws/transcribe`;
+
+      this.ws = new WebSocket(wsUrl);
+      this.ws.binaryType = 'arraybuffer';
+
+      this.ws.onopen = () => {
+        // Send config
+        this.ws!.send(JSON.stringify({ type: 'config', sampleRate: 16000 }));
+        this.onEvent?.({ type: 'connected' });
+        resolve();
+      };
+
+      this.ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          switch (msg.type) {
+            case 'partial':
+              this.onEvent?.({
+                type: 'transcript_partial',
+                text: msg.text,
+                timestamp: msg.timestamp,
+              });
+              break;
+            case 'final':
+              this.onEvent?.({
+                type: 'transcript_final',
+                text: msg.text,
+                speaker: msg.speaker,
+                timestamp: msg.timestamp,
+              });
+              break;
+            case 'vad':
+              this.onEvent?.({
+                type: 'vad',
+                isSpeaking: msg.isSpeaking,
+              });
+              break;
+            case 'error':
+              this.onEvent?.({ type: 'error', message: msg.message });
+              break;
+            case 'ready':
+              // Engine ready, nothing to do
+              break;
+          }
+        } catch {
+          // ignore malformed messages
+        }
+      };
+
+      this.ws.onclose = () => {
+        this.onEvent?.({ type: 'disconnected' });
+        if (this.isActive && this.reconnectAttempts < this.maxReconnectAttempts) {
+          this.reconnectAttempts++;
+          const delay = Math.pow(2, this.reconnectAttempts) * 1000;
+          setTimeout(() => {
+            if (this.isActive) {
+              this.connectWebSocket().catch(() => {});
+            }
+          }, delay);
+        }
+      };
+
+      this.ws.onerror = () => {
+        this.onEvent?.({ type: 'error', message: 'WebSocket connection failed' });
+        reject(new Error('WebSocket connection failed'));
+      };
+    });
+  }
+
+  /**
+   * Stop streaming and tell server to finalize any pending transcription.
+   */
+  stop(): void {
+    this.isActive = false;
+
+    // Tell server to finalize
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type: 'stop' }));
+    }
+
+    this.cleanup();
+  }
+
+  private cleanup(): void {
+    this.isActive = false;
+
+    if (this.workletNode) {
+      this.workletNode.disconnect();
+      this.workletNode = null;
+    }
+
+    if (this.audioContext) {
+      this.audioContext.close().catch(() => {});
+      this.audioContext = null;
+    }
+
+    if (this.mediaStream) {
+      this.mediaStream.getTracks().forEach((track) => track.stop());
+      this.mediaStream = null;
+    }
+
+    if (this.ws) {
+      this.ws.close();
+      this.ws = null;
+    }
+  }
+}
