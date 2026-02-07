@@ -12,23 +12,38 @@ const execAsync = promisify(exec);
 
 let sherpaManager: SherpaONNXManager | null = null;
 let vadManager: VADManager | null = null;
+let lastDbMtime: number = 0;
 
 async function initializeSherpa() {
+  const modelsPath = path.join(process.cwd(), 'models');
+  const dbPath = path.join(process.cwd(), 'speaker_db.json');
+
+  // Check if speaker database has been updated since last load
+  let dbMtime = 0;
+  if (fs.existsSync(dbPath)) {
+    dbMtime = fs.statSync(dbPath).mtimeMs;
+  }
+
+  if (sherpaManager && dbMtime > lastDbMtime) {
+    // Speaker database changed - reinitialize to pick up new enrollments
+    console.log('Speaker database updated, reinitializing...');
+    sherpaManager.cleanup();
+    sherpaManager = null;
+  }
+
   if (!sherpaManager) {
-    // Use absolute path from project root for Next.js API routes
-    const modelsPath = path.join(process.cwd(), 'models');
     sherpaManager = new SherpaONNXManager(modelsPath);
     await sherpaManager.initializeRecognizer();
     await sherpaManager.initializeSpeakerEmbedding();
 
-    const dbPath = path.join(process.cwd(), 'speaker_db.json');
     console.log('Looking for speaker database at:', dbPath);
     if (fs.existsSync(dbPath)) {
       await sherpaManager.loadSpeakerDatabase(dbPath);
-      console.log('✅ Speaker database loaded successfully');
+      lastDbMtime = dbMtime;
+      console.log('Speaker database loaded successfully');
     } else {
-      console.warn('❌ Speaker database not found at:', dbPath);
-      console.warn('Speaker identification will not work. Run: npm run enroll');
+      console.warn('Speaker database not found at:', dbPath);
+      console.warn('Speaker identification will not work. Enroll speakers first.');
     }
   }
   return sherpaManager;
@@ -112,11 +127,11 @@ async function diarizeSpeech(
       const segSamples = samples.subarray(segStartSample, segEndSample);
       try {
         const voiceprint = await manager.extractVoiceprintFromSamples(segSamples, sampleRate);
-        const speaker = await manager.identifySpeaker(voiceprint) || 'Client 1';
+        const speaker = await manager.identifySpeaker(voiceprint) || 'Unknown';
         speakerWindows.push({ speaker, startTime: segStart, endTime: segEnd });
       } catch (e) {
         console.warn(`Speaker ID failed for segment ${segStart.toFixed(2)}-${segEnd.toFixed(2)}:`, e);
-        speakerWindows.push({ speaker: 'Client 1', startTime: segStart, endTime: segEnd });
+        speakerWindows.push({ speaker: 'Unknown', startTime: segStart, endTime: segEnd });
       }
     } else {
       // Long segment: split into overlapping windows
@@ -128,7 +143,7 @@ async function diarizeSpeech(
         const windowAudio = samples.subarray(offset, offset + windowSamples);
         try {
           const voiceprint = await manager.extractVoiceprintFromSamples(windowAudio, sampleRate);
-          const speaker = await manager.identifySpeaker(voiceprint) || 'Client 1';
+          const speaker = await manager.identifySpeaker(voiceprint) || 'Unknown';
           speakerWindows.push({
             speaker,
             startTime: offset / sampleRate,
@@ -147,7 +162,7 @@ async function diarizeSpeech(
         if (tailAudio.length >= MIN_AUDIO_FOR_ID * sampleRate) {
           try {
             const voiceprint = await manager.extractVoiceprintFromSamples(tailAudio, sampleRate);
-            const speaker = await manager.identifySpeaker(voiceprint) || 'Client 1';
+            const speaker = await manager.identifySpeaker(voiceprint) || 'Unknown';
             speakerWindows.push({
               speaker,
               startTime: tailStart / sampleRate,
@@ -299,9 +314,7 @@ export async function POST(request: NextRequest) {
 
         if (text && text.trim().length > 0) {
           transcript.push({
-            speaker: (turn.speaker === 'Client 1' || turn.speaker === 'Client 2')
-              ? turn.speaker
-              : 'Client 1',
+            speaker: turn.speaker || 'Unknown',
             text: text.trim(),
             timestamp: recordingStartTime + Math.floor(turn.startTime * 1000),
           });
