@@ -6,10 +6,11 @@ import { TextToSpeech } from '@/lib/speech-synthesis';
 
 interface AnalysisPanelProps {
   transcript: TranscriptEntry[];
+  systemPrompt?: string;
   onAnalysisComplete?: (analysis: TherapeuticAnalysis) => void;
 }
 
-export default function AnalysisPanel({ transcript, onAnalysisComplete }: AnalysisPanelProps) {
+export default function AnalysisPanel({ transcript, systemPrompt, onAnalysisComplete }: AnalysisPanelProps) {
   const [analysis, setAnalysis] = useState<TherapeuticAnalysis | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
@@ -30,7 +31,7 @@ export default function AnalysisPanel({ transcript, onAnalysisComplete }: Analys
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ transcript }),
+        body: JSON.stringify({ transcript, systemPrompt }),
       });
 
       if (!response.ok) {

@@ -19,6 +19,13 @@ export interface TherapeuticAnalysis {
   concerns?: string[];
 }
 
+export interface PromptTemplate {
+  id: string;
+  name: string;
+  description: string;
+  prompt: string;
+}
+
 export interface SpeakerProfile {
   id: string;
   name: string;

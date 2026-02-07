@@ -25,7 +25,7 @@ const analysisSchema = z.object({
     .describe('Any areas of concern that require follow-up or immediate attention'),
 });
 
-const CLINICAL_SUPERVISOR_PROMPT = `You are a clinical supervisor analyzing a therapeutic session between a Therapist and a Client.
+const DEFAULT_CLINICAL_SUPERVISOR_PROMPT = `You are a clinical supervisor analyzing a therapeutic session between a Therapist and a Client.
 
 Your role is to:
 1. Identify key emotional breakthroughs and patterns
@@ -44,7 +44,7 @@ Analyze the following transcript and provide a structured clinical assessment.`;
 
 export async function POST(request: NextRequest) {
   try {
-    const { transcript } = await request.json();
+    const { transcript, systemPrompt } = await request.json();
 
     if (!transcript || !Array.isArray(transcript) || transcript.length === 0) {
       return NextResponse.json(
@@ -69,7 +69,9 @@ export async function POST(request: NextRequest) {
     const { object } = await generateObject({
       model: groq('meta-llama/llama-4-scout-17b-16e-instruct'),
       schema: analysisSchema,
-      system: CLINICAL_SUPERVISOR_PROMPT,
+      system: (typeof systemPrompt === 'string' && systemPrompt.trim())
+        ? systemPrompt.trim()
+        : DEFAULT_CLINICAL_SUPERVISOR_PROMPT,
       prompt: `Analyze this therapeutic session transcript:\n\n${formattedTranscript}`,
     });
 
