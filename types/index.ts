@@ -48,6 +48,24 @@ export interface SpeakerDatabase {
   createdAt: number;
 }
 
+// Memory types
+
+export interface MemoryFact {
+  id: string;
+  content: string;
+  category: 'personal' | 'relationship' | 'emotional' | 'goal' | 'preference' | 'history' | 'other';
+  extractedAt: number;
+}
+
+export interface SpeakerMemory {
+  facts: MemoryFact[];
+  updatedAt: number;
+}
+
+export interface MemoryDatabase {
+  speakers: Record<string, SpeakerMemory>;
+}
+
 // Streaming transcription types
 
 /** Messages sent from server to client over WebSocket */

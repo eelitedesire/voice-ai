@@ -7,6 +7,7 @@ import LiveTranscriptChat from '@/components/LiveTranscriptChat';
 import AnalysisPanel from '@/components/AnalysisPanel';
 import SpeakerEnrollment from '@/components/SpeakerEnrollment';
 import PromptEditor from '@/components/PromptEditor';
+import MemoryPanel from '@/components/MemoryPanel';
 
 export default function Home() {
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
@@ -206,6 +207,11 @@ export default function Home() {
             />
           </div>
         )}
+
+        {/* Session Memory */}
+        <div className="bg-white rounded-xl shadow-lg p-6 mb-8">
+          <MemoryPanel />
+        </div>
 
         {/* Speaker Enrollment */}
         <div className="bg-white rounded-xl shadow-lg p-6 mb-8">

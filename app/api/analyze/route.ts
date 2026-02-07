@@ -3,6 +3,7 @@ import { generateObject } from 'ai';
 import { createGroq } from '@ai-sdk/groq';
 import { z } from 'zod';
 import { TranscriptEntry, TherapeuticAnalysis } from '@/types';
+import { addFacts, getMemoriesForSpeaker } from '@/lib/memory-store';
 
 // Initialize Groq provider
 const groq = createGroq({
@@ -24,6 +25,55 @@ const analysisSchema = z.object({
     .optional()
     .describe('Any areas of concern that require follow-up or immediate attention'),
 });
+
+// Schema for memory extraction (runs asynchronously after analysis)
+const memorySchema = z.object({
+  speakers: z.array(
+    z.object({
+      name: z.string(),
+      facts: z.array(
+        z.object({
+          content: z.string(),
+          category: z.enum(['personal', 'relationship', 'emotional', 'goal', 'preference', 'history', 'other']),
+        })
+      ),
+    })
+  ),
+});
+
+async function extractAndStoreMemories(formattedTranscript: string, speakerNames: string[]) {
+  try {
+    // Build existing-facts context so the LLM skips duplicates
+    const existingParts: string[] = [];
+    for (const name of speakerNames) {
+      const mem = getMemoriesForSpeaker(name);
+      if (mem && mem.facts.length > 0) {
+        existingParts.push(
+          `Already known about ${name}:\n${mem.facts.map(f => `- ${f.content}`).join('\n')}`
+        );
+      }
+    }
+    const existingContext = existingParts.length > 0
+      ? `\n\nThe following facts are already stored. Do NOT re-extract these:\n${existingParts.join('\n\n')}`
+      : '';
+
+    const { object } = await generateObject({
+      model: groq('meta-llama/llama-4-scout-17b-16e-instruct'),
+      schema: memorySchema,
+      system: `You extract important facts about people from therapy transcripts. Extract personal details, relationship dynamics, emotional patterns, goals, preferences, and history. Each fact should be a single concise sentence. Only extract genuinely new or important information.${existingContext}`,
+      prompt: `Extract facts about each person from this transcript:\n\n${formattedTranscript}`,
+    });
+
+    for (const speaker of object.speakers) {
+      if (speaker.facts.length > 0) {
+        addFacts(speaker.name, speaker.facts);
+      }
+    }
+    console.log('[Memory] Extracted memories from session analysis');
+  } catch (err) {
+    console.error('[Memory] Extraction failed (non-blocking):', err);
+  }
+}
 
 const DEFAULT_CLINICAL_SUPERVISOR_PROMPT = `You are a clinical supervisor analyzing a therapeutic session between a Therapist and a Client.
 
@@ -82,6 +132,10 @@ export async function POST(request: NextRequest) {
       homework: object.homework,
       concerns: object.concerns,
     };
+
+    // Fire-and-forget: extract memories from this session asynchronously
+    const speakerNames = [...new Set(transcript.map((e: TranscriptEntry) => e.speaker))];
+    extractAndStoreMemories(formattedTranscript, speakerNames);
 
     return NextResponse.json({ analysis });
   } catch (error) {
