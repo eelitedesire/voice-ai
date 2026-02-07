@@ -6,10 +6,12 @@ import SessionRecorder from '@/components/SessionRecorder';
 import TranscriptDisplay from '@/components/TranscriptDisplay';
 import AnalysisPanel from '@/components/AnalysisPanel';
 import SpeakerEnrollment from '@/components/SpeakerEnrollment';
+import PromptEditor from '@/components/PromptEditor';
 
 export default function Home() {
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
   const [showAnalysis, setShowAnalysis] = useState(false);
+  const [supervisorPrompt, setSupervisorPrompt] = useState('');
 
   const handleTranscriptUpdate = (entry: TranscriptEntry) => {
     setTranscript(prev => [...prev, entry]);
@@ -68,11 +70,17 @@ export default function Home() {
           <TranscriptDisplay transcript={transcript} />
         </div>
 
+        {/* Supervisor Prompt Configuration */}
+        <div className="bg-white rounded-xl shadow-lg p-6 mb-8">
+          <PromptEditor onPromptChange={setSupervisorPrompt} />
+        </div>
+
         {/* Analysis Panel */}
         {showAnalysis && (
           <div className="bg-white rounded-xl shadow-lg p-6 mb-8">
             <AnalysisPanel
               transcript={transcript}
+              systemPrompt={supervisorPrompt}
               onAnalysisComplete={handleAnalysisComplete}
             />
           </div>
