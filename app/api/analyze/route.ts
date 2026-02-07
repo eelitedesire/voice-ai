@@ -67,7 +67,7 @@ export async function POST(request: NextRequest) {
 
     // Generate structured analysis using Groq
     const { object } = await generateObject({
-      model: groq('llama-3.3-70b-versatile'),
+      model: groq('meta-llama/llama-4-scout-17b-16e-instruct'),
       schema: analysisSchema,
       system: CLINICAL_SUPERVISOR_PROMPT,
       prompt: `Analyze this therapeutic session transcript:\n\n${formattedTranscript}`,
