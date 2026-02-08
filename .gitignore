@@ -42,7 +42,11 @@ next-env.d.ts
 
 # voice ai specific
 speaker_db.json
+memory_db.json
 session_logs/
 *.wav
 /audio/
 models/
+
+# encrypted relationship vault (contains sensitive therapy data)
+.vault/

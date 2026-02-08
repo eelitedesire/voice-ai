@@ -4,6 +4,8 @@ import { createGroq } from '@ai-sdk/groq';
 import { z } from 'zod';
 import { ChatMessage, TranscriptEntry } from '@/types';
 import { addFacts, formatAllMemoriesForContext, getMemoriesForSpeaker } from '@/lib/memory-store';
+import { runRAGPipeline, runLightRAGPipeline } from '@/lib/rag/orchestrator';
+import type { RAGPipelineInput } from '@/lib/rag/types';
 
 const groq = createGroq({
   apiKey: process.env.GROQ_API_KEY,
@@ -66,7 +68,7 @@ IMPORTANT formatting rules:
 
 export async function POST(request: NextRequest) {
   try {
-    const { message, chatHistory, transcript, systemPrompt } = await request.json();
+    const { message, chatHistory, transcript, systemPrompt, coupleId } = await request.json();
 
     if (!message || typeof message !== 'string') {
       return NextResponse.json(
@@ -80,6 +82,74 @@ export async function POST(request: NextRequest) {
         { error: 'GROQ_API_KEY not configured' },
         { status: 500 }
       );
+    }
+
+    // ── RAG Pipeline Integration ──
+    // If a coupleId is provided, run the full RAG pipeline to augment context
+    let ragContext = '';
+    let ragSafetyOverride: string | undefined;
+
+    if (coupleId) {
+      // Parse speaker from message
+      const speakerMatch = message.match(/^\[([^\]]+)\]:\s*(.+)$/s);
+      const currentSpeaker = speakerMatch ? speakerMatch[1] : undefined;
+      const messageBody = speakerMatch ? speakerMatch[2] : message;
+
+      const ragInput: RAGPipelineInput = {
+        coupleId,
+        currentTranscript: (transcript || []).map((e: TranscriptEntry) => ({
+          speaker: e.speaker,
+          text: e.text,
+          timestamp: e.timestamp,
+        })),
+        currentMessage: messageBody,
+        currentSpeaker,
+        chatHistory: (chatHistory || []).map((m: ChatMessage) => ({
+          role: m.role,
+          speaker: m.speaker,
+          text: m.text,
+        })),
+      };
+
+      try {
+        const ragResult = await runRAGPipeline(ragInput);
+
+        if (ragResult.safetyOverride) {
+          // Safety agent has overridden — return crisis response directly
+          ragSafetyOverride = ragResult.augmentedContext;
+        } else {
+          ragContext = ragResult.augmentedContext;
+        }
+      } catch (ragErr) {
+        console.error('[TherapistChat] RAG pipeline failed (non-blocking):', ragErr);
+        // Fall through to standard processing
+      }
+    } else {
+      // Lightweight safety check even without coupleId
+      const speakerMatch = message.match(/^\[([^\]]+)\]:\s*(.+)$/s);
+      const messageBody = speakerMatch ? speakerMatch[2] : message;
+
+      try {
+        const safetyResult = await runLightRAGPipeline({
+          coupleId: '__anonymous__',
+          currentTranscript: [],
+          currentMessage: messageBody,
+        });
+
+        if (safetyResult.safetyOverride && safetyResult.overrideResponse) {
+          ragSafetyOverride = safetyResult.overrideResponse;
+        }
+      } catch {
+        // Safety check failure is non-blocking
+      }
+    }
+
+    // If safety override triggered, return crisis response immediately
+    if (ragSafetyOverride) {
+      return NextResponse.json({
+        reply: ragSafetyOverride,
+        safetyOverride: true,
+      });
     }
 
     // Build context from transcript
@@ -125,6 +195,11 @@ export async function POST(request: NextRequest) {
     const memoryContext = formatAllMemoriesForContext(speakerNames);
     if (memoryContext) {
       context += memoryContext + '\n';
+    }
+
+    // Inject RAG-augmented context (relationship history, clinical supervision)
+    if (ragContext) {
+      context += ragContext + '\n';
     }
 
     const { text } = await generateText({
