@@ -80,6 +80,12 @@ export async function POST(request: NextRequest) {
           whenToUse: t.whenToUse,
         })),
       },
+      vectorContext: result.vectorContext ? {
+        clinicalContext: result.vectorContext.clinicalContext ? '(available)' : '(empty)',
+        relationshipContext: result.vectorContext.relationshipContext ? '(available)' : '(empty)',
+        redLineTriggered: result.vectorContext.redLineTriggered,
+        vectorRetrievalTimeMs: result.vectorContext.vectorRetrievalTimeMs,
+      } : null,
       augmentedContext: result.augmentedContext,
       safetyOverride: result.safetyOverride,
       processingTimeMs: result.processingTimeMs,
