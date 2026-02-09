@@ -19,6 +19,7 @@ import {
   EmotionalTrend,
   EmotionalTone,
 } from './types';
+import { invalidateRelationshipIndex } from './relationship-vector-index';
 
 const VAULT_DIR = path.join(process.cwd(), '.vault');
 const ALGORITHM = 'aes-256-gcm';
@@ -150,6 +151,9 @@ export function addSessionRecord(coupleId: string, session: SessionRecord): void
   }
 
   writeVault(coupleId, vault);
+
+  // Invalidate the vector index so it gets rebuilt with new data
+  invalidateRelationshipIndex(coupleId);
 }
 
 /** Get recent session summaries (most recent first). */

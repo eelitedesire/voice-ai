@@ -171,16 +171,32 @@ export type ConflictClassification =
 
 // ─── Orchestrator ────────────────────────────────────────────────────
 
-/** Combined result from all three RAG agents. */
+/** Combined result from all RAG agents + dual vector database. */
 export interface RAGPipelineResult {
   safety: SafetyCheckResult;
   context: ContextRetrievalResult;
   supervision: ClinicalSupervisionResult;
+  /** Dual vector database context (clinical + relationship layers) */
+  vectorContext?: DualVectorContext;
   /** Merged context string ready to inject into the therapist LLM prompt. */
   augmentedContext: string;
   /** If true, the safety agent has overridden normal flow. */
   safetyOverride: boolean;
   processingTimeMs: number;
+}
+
+/** Result from the dual-stream vector retrieval. */
+export interface DualVectorContext {
+  /** Formatted context from the Clinical Knowledge Base (Layer 1) */
+  clinicalContext: string;
+  /** Formatted context from the Relationship Vault Index (Layer 2) */
+  relationshipContext: string;
+  /** Full merged context string for LLM injection */
+  mergedContext: string;
+  /** Whether a red-line safety protocol was triggered */
+  redLineTriggered: boolean;
+  /** Processing time for vector retrieval */
+  vectorRetrievalTimeMs: number;
 }
 
 /** Input to the RAG pipeline. */

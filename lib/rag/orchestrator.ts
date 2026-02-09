@@ -1,11 +1,14 @@
 /**
  * RAG Pipeline Orchestrator
  *
- * Coordinates the three agentic RAG layers in the correct order:
+ * Coordinates the agentic RAG layers + Dual Vector Database in order:
  *
  *   1. Safety Agent   — deterministic scan; if CRITICAL, override everything
- *   2. Context Retriever — fetch historical patterns from the Relationship Vault
- *   3. Clinical Supervisor — decide framework & techniques given (1) + (2)
+ *   2. Dual Vector DB — fast semantic retrieval from both knowledge layers:
+ *      a. Clinical Knowledge Base (Layer 1 — "Wisdom")
+ *      b. Relationship Vault Index (Layer 2 — "Identity")
+ *   3. Context Retriever — fetch historical patterns from the Relationship Vault
+ *   4. Clinical Supervisor — decide framework & techniques given (1) + (2) + (3)
  *
  * The orchestrator merges all results into a single augmented context string
  * that gets injected into the therapist LLM prompt.
@@ -17,18 +20,21 @@ import {
   SafetyCheckResult,
   ContextRetrievalResult,
   ClinicalSupervisionResult,
+  DualVectorContext,
 } from './types';
 import { runSafetyCheck } from './agents/safety-agent';
 import { runContextRetriever, formatRetrievalContext } from './agents/context-retriever-agent';
 import { runClinicalSupervisor, formatSupervisionContext } from './agents/clinical-supervisor-agent';
+import { dualStreamRetrieval } from './context-merger';
 
 /**
  * Run the full RAG pipeline.
  *
  * Execution order:
  *   1. Safety check (synchronous, deterministic) — blocks if critical
- *   2. Context retrieval + Clinical supervision (can run in parallel if safety passes)
- *   3. Merge all results into augmented context
+ *   2. Dual vector DB retrieval (fast, local, no LLM calls)
+ *   3. Context retrieval + Clinical supervision (LLM-assisted)
+ *   4. Merge all results into augmented context
  */
 export async function runRAGPipeline(input: RAGPipelineInput): Promise<RAGPipelineResult> {
   const startTime = Date.now();
@@ -50,14 +56,38 @@ export async function runRAGPipeline(input: RAGPipelineInput): Promise<RAGPipeli
     };
   }
 
-  // ── Step 2: Context Retrieval & Clinical Supervision ──
-  // Run in parallel for speed. The supervisor also receives retrieval results
-  // for informed decision-making, so we run retrieval first, then supervision.
+  // ── Step 2: Dual Vector Database Retrieval (fast, no LLM) ──
+  let vectorContext: DualVectorContext | undefined;
+  try {
+    const queryText = buildVectorQuery(input);
+    const vectorResult = dualStreamRetrieval({
+      coupleId: input.coupleId,
+      query: queryText,
+    });
+
+    vectorContext = {
+      clinicalContext: vectorResult.clinical.formattedContext,
+      relationshipContext: vectorResult.relationship.formattedContext,
+      mergedContext: vectorResult.mergedContext,
+      redLineTriggered: vectorResult.redLineTriggered,
+      vectorRetrievalTimeMs: vectorResult.processingTimeMs,
+    };
+
+    console.log(`[RAG] Vector retrieval completed in ${vectorResult.processingTimeMs}ms`);
+    console.log(`  Clinical: ${vectorResult.clinical.protocols.length} protocols found`);
+    console.log(`  Relationship: ${vectorResult.relationship.results.length} history items found`);
+    if (vectorResult.redLineTriggered) {
+      console.log('  ** RED LINE protocols triggered **');
+    }
+  } catch (err) {
+    console.error('[RAG] Dual vector retrieval failed (non-blocking):', err);
+  }
+
+  // ── Step 3: Context Retrieval & Clinical Supervision (LLM-assisted) ──
   let contextResult: ContextRetrievalResult;
   let supervisionResult: ClinicalSupervisionResult;
 
   try {
-    // Context retrieval first (needs vault data)
     contextResult = await runContextRetriever(input);
   } catch (err) {
     console.error('[RAG] Context retrieval failed:', err);
@@ -65,24 +95,25 @@ export async function runRAGPipeline(input: RAGPipelineInput): Promise<RAGPipeli
   }
 
   try {
-    // Clinical supervision (uses retrieval results for better decisions)
     supervisionResult = await runClinicalSupervisor(input, contextResult);
   } catch (err) {
     console.error('[RAG] Clinical supervision failed:', err);
     supervisionResult = emptySupervisionResult();
   }
 
-  // ── Step 3: Merge into augmented context ──
+  // ── Step 4: Merge into augmented context ──
   const augmentedContext = buildAugmentedContext(
     safetyResult,
     contextResult,
     supervisionResult,
+    vectorContext,
   );
 
   const result: RAGPipelineResult = {
     safety: safetyResult,
     context: contextResult,
     supervision: supervisionResult,
+    vectorContext,
     augmentedContext,
     safetyOverride: false,
     processingTimeMs: Date.now() - startTime,
@@ -116,6 +147,31 @@ export async function runLightRAGPipeline(input: RAGPipelineInput): Promise<{
   };
 }
 
+/**
+ * Run only the dual vector retrieval (no LLM calls).
+ * Useful for fast, local-only augmentation.
+ */
+export function runVectorRetrieval(input: RAGPipelineInput): DualVectorContext | null {
+  try {
+    const queryText = buildVectorQuery(input);
+    const result = dualStreamRetrieval({
+      coupleId: input.coupleId,
+      query: queryText,
+    });
+
+    return {
+      clinicalContext: result.clinical.formattedContext,
+      relationshipContext: result.relationship.formattedContext,
+      mergedContext: result.mergedContext,
+      redLineTriggered: result.redLineTriggered,
+      vectorRetrievalTimeMs: result.processingTimeMs,
+    };
+  } catch (err) {
+    console.error('[RAG] Vector retrieval failed:', err);
+    return null;
+  }
+}
+
 // ─── Internal Helpers ────────────────────────────────────────────────
 
 function collectTextsForSafety(input: RAGPipelineInput): string[] {
@@ -141,10 +197,34 @@ function collectTextsForSafety(input: RAGPipelineInput): string[] {
   return texts;
 }
 
+/** Build a query string for vector search from the pipeline input */
+function buildVectorQuery(input: RAGPipelineInput): string {
+  const parts: string[] = [];
+
+  if (input.currentMessage) {
+    parts.push(input.currentMessage);
+  }
+
+  // Include recent transcript for richer context
+  if (input.currentTranscript.length > 0) {
+    const recent = input.currentTranscript.slice(-5);
+    parts.push(recent.map(e => e.text).join(' '));
+  }
+
+  // Include recent chat messages
+  if (input.chatHistory) {
+    const recentChat = input.chatHistory.slice(-3);
+    parts.push(recentChat.map(m => m.text).join(' '));
+  }
+
+  return parts.join(' ');
+}
+
 function buildAugmentedContext(
   safety: SafetyCheckResult,
   context: ContextRetrievalResult,
   supervision: ClinicalSupervisionResult,
+  vectorContext?: DualVectorContext,
 ): string {
   const parts: string[] = [];
 
@@ -163,17 +243,22 @@ function buildAugmentedContext(
     }
   }
 
-  // Historical context from the vault
+  // Dual Vector Database context (clinical + relationship)
+  if (vectorContext?.mergedContext) {
+    parts.push(vectorContext.mergedContext);
+  }
+
+  // Historical context from the vault (LLM-assisted retrieval)
   const retrievalContext = formatRetrievalContext(context);
   if (retrievalContext) {
-    parts.push('\n[RELATIONSHIP HISTORY]');
+    parts.push('\n[RELATIONSHIP HISTORY — LLM Pattern Analysis]');
     parts.push(retrievalContext);
   }
 
-  // Clinical supervision guidance
+  // Clinical supervision guidance (LLM-selected framework)
   const supervisionContext = formatSupervisionContext(supervision);
   if (supervisionContext) {
-    parts.push('\n[CLINICAL SUPERVISION]');
+    parts.push('\n[CLINICAL SUPERVISION — Framework Selection]');
     parts.push(supervisionContext);
   }
 
