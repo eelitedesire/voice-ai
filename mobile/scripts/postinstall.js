@@ -3,9 +3,13 @@
 /**
  * Postinstall script — patches react-native-screens codegen specs.
  *
- * RN 0.78's codegen can't resolve local type aliases used with
- * CT.WithDefault in some react-native-screens fabric specs.
- * This script inlines those type aliases so codegen succeeds.
+ * RN 0.78's codegen has two issues with react-native-screens fabric specs:
+ *  1. Can't resolve local type aliases used with CT.WithDefault
+ *  2. Can't handle raw string union types in event payload properties
+ *
+ * This script:
+ *  - Inlines string union type aliases used in CT.WithDefault<Alias, ...>
+ *  - Replaces raw string unions in event/object type properties with `string`
  *
  * Tracked upstream: https://github.com/software-mansion/react-native-screens
  * Remove this patch once the fix is released.
@@ -80,6 +84,20 @@ for (const filePath of walkDir(fabricDir)) {
       content = content.replace(fullMatch, '');
       modified = true;
     }
+  }
+
+  // Pass 2: Replace raw string union types in object/event type properties.
+  // e.g. `environment: 'regular' | 'inline';` → `environment: string;`
+  // These appear inside event payload types and codegen can't handle them.
+  // We avoid matching CT.WithDefault patterns (handled above).
+  const rawUnionPropPattern = /^(\s+\w+):\s*'[^']*'(?:\s*\|\s*'[^']*')+\s*;/gm;
+  let rawMatch;
+  while ((rawMatch = rawUnionPropPattern.exec(content)) !== null) {
+    // Skip if this line is inside a CT.WithDefault<...> (already handled)
+    if (rawMatch[0].includes('CT.WithDefault')) continue;
+    const replacement = `${rawMatch[1]}: string;`;
+    content = content.replace(rawMatch[0], replacement);
+    modified = true;
   }
 
   if (modified) {
