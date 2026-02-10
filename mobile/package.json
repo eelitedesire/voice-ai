@@ -9,6 +9,7 @@
     "test": "jest",
     "lint": "eslint .",
     "download-models": "node scripts/download-models.js",
+    "postinstall": "node scripts/postinstall.js",
     "pod-install": "cd ios && pod install"
   },
   "dependencies": {
