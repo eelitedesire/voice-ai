@@ -20,7 +20,7 @@
     "react-native-mmkv": "^3.2.0",
     "react-native-reanimated": "^3.17.0",
     "react-native-safe-area-context": "^5.1.0",
-    "react-native-screens": "^4.5.0",
+    "react-native-screens": "^4.23.0",
     "react-native-svg": "^15.11.0"
   },
   "devDependencies": {
