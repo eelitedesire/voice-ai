@@ -22,10 +22,6 @@ target 'VoiceAI' do
     :app_path => "#{Pod::Config.instance.installation_root}/.."
   )
 
-  target 'VoiceAITests' do
-    inherit! :complete
-  end
-
   post_install do |installer|
     react_native_post_install(
       installer,

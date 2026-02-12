@@ -3,7 +3,7 @@ apply plugin: "org.jetbrains.kotlin.android"
 apply plugin: "com.facebook.react"
 
 react {
-    // React Native settings — defaults are fine for most projects
+    autolinkLibrariesWithApp()
 }
 
 android {
