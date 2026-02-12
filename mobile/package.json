@@ -9,7 +9,6 @@
     "test": "jest",
     "lint": "eslint .",
     "download-models": "node scripts/download-models.js",
-    "postinstall": "node scripts/postinstall.js",
     "pod-install": "cd ios && pod install"
   },
   "dependencies": {
@@ -21,7 +20,7 @@
     "react-native-mmkv": "^3.2.0",
     "react-native-reanimated": "^3.17.0",
     "react-native-safe-area-context": "^5.1.0",
-    "react-native-screens": "^4.23.0",
+    "react-native-screens": "~4.13.1",
     "react-native-svg": "^15.11.0"
   },
   "devDependencies": {
