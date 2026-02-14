@@ -9,7 +9,6 @@
 /* Begin PBXBuildFile section */
 		13B07FBC1A68108700A75B9A /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 13B07FB01A68108700A75B9A /* AppDelegate.swift */; };
 		13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB51A68108700A75B9A /* Images.xcassets */; };
-		13B07FC11A68108700A75B9A /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB11A68108700A75B9A /* LaunchScreen.storyboard */; };
 		A001A1C12B5F0E0000000001 /* AudioCaptureModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = A001A1C02B5F0E0000000001 /* AudioCaptureModule.swift */; };
 		A001A1C32B5F0E0000000002 /* AudioCaptureModuleBridge.m in Sources */ = {isa = PBXBuildFile; fileRef = A001A1C22B5F0E0000000002 /* AudioCaptureModuleBridge.m */; };
 		A001A1C52B5F0E0000000003 /* SherpaOnnxModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = A001A1C42B5F0E0000000003 /* SherpaOnnxModule.swift */; };
@@ -22,7 +21,6 @@
 		13B07F961A680F5B00A75B9A /* VoiceAI.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = VoiceAI.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		13B07FB01A68108700A75B9A /* AppDelegate.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = VoiceAI/AppDelegate.swift; sourceTree = "<group>"; };
 		13B07FB51A68108700A75B9A /* Images.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = Images.xcassets; path = VoiceAI/Images.xcassets; sourceTree = "<group>"; };
-		13B07FB11A68108700A75B9A /* LaunchScreen.storyboard */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; name = LaunchScreen.storyboard; path = VoiceAI/LaunchScreen.storyboard; sourceTree = "<group>"; };
 		13B07FB61A68108700A75B9A /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = VoiceAI/Info.plist; sourceTree = "<group>"; };
 		A001A1BF2B5F0E0000000000 /* VoiceAI-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "VoiceAI-Bridging-Header.h"; sourceTree = "<group>"; };
 		A001A1C02B5F0E0000000001 /* AudioCaptureModule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioCaptureModule.swift; sourceTree = "<group>"; };
@@ -70,7 +68,6 @@
 				13B07FB01A68108700A75B9A /* AppDelegate.swift */,
 				13B07FB51A68108700A75B9A /* Images.xcassets */,
 				13B07FB61A68108700A75B9A /* Info.plist */,
-				13B07FB11A68108700A75B9A /* LaunchScreen.storyboard */,
 				A001A1BE2B5F0E0000000000 /* NativeModules */,
 			);
 			name = VoiceAI;
@@ -157,7 +154,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */,
-				13B07FC11A68108700A75B9A /* LaunchScreen.storyboard in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
