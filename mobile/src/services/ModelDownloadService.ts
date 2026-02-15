@@ -75,7 +75,8 @@ export class ModelDownloadService {
 
       // Download each file sequentially with combined progress
       for (const file of files) {
-        const targetPath = `${this.modelsDir}/${file.path}`;
+        // MODEL_PATHS already includes 'models/' prefix, so use documentDir
+        const targetPath = `${this.documentDir}/${file.path}`;
 
         // Skip if already exists
         const exists = await RNFS.exists(targetPath);
@@ -127,7 +128,8 @@ export class ModelDownloadService {
     try {
       await this.ensureModelsDirectory();
 
-      const targetPath = `${this.modelsDir}/${MODEL_PATHS.speakerEncoder}`;
+      // MODEL_PATHS already includes 'models/' prefix
+      const targetPath = `${this.documentDir}/${MODEL_PATHS.speakerEncoder}`;
 
       // Check if already exists
       const exists = await RNFS.exists(targetPath);
@@ -176,7 +178,8 @@ export class ModelDownloadService {
     try {
       await this.ensureModelsDirectory();
 
-      const targetPath = `${this.modelsDir}/${MODEL_PATHS.vad}`;
+      // MODEL_PATHS already includes 'models/' prefix
+      const targetPath = `${this.documentDir}/${MODEL_PATHS.vad}`;
 
       // Check if already exists
       const exists = await RNFS.exists(targetPath);
@@ -289,11 +292,12 @@ export class ModelDownloadService {
   }
 
   private async checkASRModelsExist(): Promise<boolean> {
+    // MODEL_PATHS already includes 'models/' prefix
     const paths = [
-      `${this.modelsDir}/${MODEL_PATHS.asrEncoder}`,
-      `${this.modelsDir}/${MODEL_PATHS.asrDecoder}`,
-      `${this.modelsDir}/${MODEL_PATHS.asrJoiner}`,
-      `${this.modelsDir}/${MODEL_PATHS.asrTokens}`,
+      `${this.documentDir}/${MODEL_PATHS.asrEncoder}`,
+      `${this.documentDir}/${MODEL_PATHS.asrDecoder}`,
+      `${this.documentDir}/${MODEL_PATHS.asrJoiner}`,
+      `${this.documentDir}/${MODEL_PATHS.asrTokens}`,
     ];
 
     const results = await Promise.all(paths.map((p) => RNFS.exists(p)));
