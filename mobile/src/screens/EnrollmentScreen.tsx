@@ -129,8 +129,32 @@ export function EnrollmentScreen() {
     }
 
     try {
-      // Concatenate all audio buffers for enrollment
-      const combinedBase64 = audioBuffers.current.join('');
+      // Decode and concatenate all audio buffers
+      // Each buffer is base64-encoded Float32Array - we need to decode, concatenate, then re-encode
+      const decodedBuffers: Float32Array[] = audioBuffers.current.map((base64) => {
+        const binary = globalThis.atob(base64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        return new Float32Array(bytes.buffer);
+      });
+
+      // Concatenate all Float32Arrays
+      const totalLength = decodedBuffers.reduce((sum, arr) => sum + arr.length, 0);
+      const combinedAudio = new Float32Array(totalLength);
+      let offset = 0;
+      for (const buffer of decodedBuffers) {
+        combinedAudio.set(buffer, offset);
+        offset += buffer.length;
+      }
+
+      // Re-encode to base64
+      const combinedBytes = new Uint8Array(combinedAudio.buffer);
+      const binaryString = String.fromCharCode(...combinedBytes);
+      const combinedBase64 = globalThis.btoa(binaryString);
+
+      console.log(`[Enrollment] Combined ${decodedBuffers.length} buffers, total samples: ${totalLength}`);
 
       const profile = await speakerService.current.enrollSpeaker(
         name.trim(),
