@@ -13,6 +13,7 @@ import {
   Pressable,
   Alert,
 } from 'react-native';
+import RNFS from 'react-native-fs';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RecordButton } from '../components/RecordButton';
@@ -35,6 +36,7 @@ export function SessionScreen() {
   const speakers = getSpeakerProfiles();
 
   const { audioLevel } = useAudioCapture();
+  const documentDir = RNFS.DocumentDirectoryPath;
   const {
     isActive,
     transcript,
@@ -45,7 +47,7 @@ export function SessionScreen() {
     start,
     stop,
     clearTranscript,
-  } = useTranscription('/var/mobile'); // document dir — resolved at runtime
+  } = useTranscription(documentDir);
 
   const { session, startSession, endSession, analyzeSession, isAnalyzing } =
     useSession();
