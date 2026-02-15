@@ -25,6 +25,7 @@ interface UseTranscriptionReturn {
   isSpeaking: boolean;
   connectionStatus: ConnectionStatus;
   processingMode: ProcessingMode;
+  audioLevel: { rms: number; peak: number };
   start: () => Promise<void>;
   stop: () => Promise<TranscriptEntry[]>;
   clearTranscript: () => void;
@@ -35,6 +36,7 @@ export function useTranscription(documentDir: string): UseTranscriptionReturn {
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
   const [partialText, setPartialText] = useState('');
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [audioLevel, setAudioLevel] = useState({ rms: 0, peak: 0 });
   const [connectionStatus, setConnectionStatus] =
     useState<ConnectionStatus>('disconnected');
 
@@ -99,6 +101,9 @@ export function useTranscription(documentDir: string): UseTranscriptionReturn {
       );
 
       onDeviceRef.current!.onVADChange(setIsSpeaking);
+      onDeviceRef.current!.onAudioLevel((rms, peak) => {
+        setAudioLevel({ rms, peak });
+      });
       await onDeviceRef.current!.start();
     } else if (streamingRef.current) {
       streamingRef.current.onMessage((msg: StreamingServerMessage) => {
@@ -141,6 +146,7 @@ export function useTranscription(documentDir: string): UseTranscriptionReturn {
     setIsActive(false);
     setIsSpeaking(false);
     setPartialText('');
+    setAudioLevel({ rms: 0, peak: 0 });
 
     return result;
   }, [isActive, transcript]);
@@ -159,6 +165,7 @@ export function useTranscription(documentDir: string): UseTranscriptionReturn {
     isSpeaking,
     connectionStatus,
     processingMode,
+    audioLevel,
     start,
     stop,
     clearTranscript,

@@ -23,7 +23,6 @@ import { ProcessingIndicator } from '../components/ProcessingIndicator';
 import { SpeakerBadge } from '../components/SpeakerBadge';
 import { useTranscription } from '../hooks/useTranscription';
 import { useSession } from '../hooks/useSession';
-import { useAudioCapture } from '../hooks/useAudioCapture';
 import { useOnDeviceModels } from '../hooks/useOnDeviceModels';
 import { getSettings, getSpeakerProfiles } from '../services/StorageService';
 import { colors, typography, spacing, borderRadius, shadows } from '../theme';
@@ -36,7 +35,6 @@ export function SessionScreen() {
   const settings = getSettings();
   const speakers = getSpeakerProfiles();
 
-  const { audioLevel } = useAudioCapture();
   const documentDir = RNFS.DocumentDirectoryPath;
   const { status: modelStatus } = useOnDeviceModels(documentDir);
   const {
@@ -46,6 +44,7 @@ export function SessionScreen() {
     isSpeaking,
     connectionStatus,
     processingMode,
+    audioLevel,
     start,
     stop,
     clearTranscript,
