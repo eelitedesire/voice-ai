@@ -24,6 +24,7 @@ import { SpeakerBadge } from '../components/SpeakerBadge';
 import { useTranscription } from '../hooks/useTranscription';
 import { useSession } from '../hooks/useSession';
 import { useAudioCapture } from '../hooks/useAudioCapture';
+import { useOnDeviceModels } from '../hooks/useOnDeviceModels';
 import { getSettings, getSpeakerProfiles } from '../services/StorageService';
 import { colors, typography, spacing, borderRadius, shadows } from '../theme';
 import type { RootStackParamList } from '../navigation/AppNavigator';
@@ -37,6 +38,7 @@ export function SessionScreen() {
 
   const { audioLevel } = useAudioCapture();
   const documentDir = RNFS.DocumentDirectoryPath;
+  const { status: modelStatus } = useOnDeviceModels(documentDir);
   const {
     isActive,
     transcript,
@@ -92,7 +94,30 @@ export function SessionScreen() {
         );
       }
     } else {
-      // Start recording
+      // Start recording - check prerequisites first
+      const needsModels = processingMode === 'on-device' || processingMode === 'hybrid';
+      const modelsReady = modelStatus.asr === 'ready' && modelStatus.vad === 'ready';
+
+      if (needsModels && !modelsReady) {
+        Alert.alert(
+          'Models Not Ready',
+          'On-device processing requires downloaded models. Go to Settings to download them, or switch to server mode.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Settings', onPress: () => navigation.navigate('Settings') },
+          ],
+        );
+        return;
+      }
+
+      if (processingMode === 'server' && connectionStatus === 'disconnected') {
+        Alert.alert(
+          'Server Not Connected',
+          `Cannot connect to ${settings.serverUrl}. Make sure the server is running.`,
+        );
+        return;
+      }
+
       clearTranscript();
       startSession();
       setElapsed(0);
@@ -102,7 +127,16 @@ export function SessionScreen() {
       }, 1000);
       setTimerInterval(interval);
 
-      await start();
+      try {
+        await start();
+      } catch (err) {
+        clearInterval(interval);
+        setTimerInterval(null);
+        Alert.alert(
+          'Recording Failed',
+          err instanceof Error ? err.message : 'Failed to start recording',
+        );
+      }
     }
   }, [
     isActive,
@@ -115,6 +149,10 @@ export function SessionScreen() {
     analyzeSession,
     navigation,
     session,
+    processingMode,
+    modelStatus,
+    connectionStatus,
+    settings.serverUrl,
   ]);
 
   const formatElapsed = (seconds: number): string => {
@@ -123,8 +161,38 @@ export function SessionScreen() {
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
+  const needsModels = processingMode === 'on-device' || processingMode === 'hybrid';
+  const modelsNotReady = needsModels && (
+    modelStatus.asr !== 'ready' ||
+    modelStatus.vad !== 'ready' ||
+    (processingMode === 'on-device' && modelStatus.speaker !== 'ready')
+  );
+
   return (
     <View style={styles.container}>
+      {/* Warning banners */}
+      {modelsNotReady && !isActive && (
+        <View style={styles.warningBanner}>
+          <Text style={styles.warningText}>
+            ⚠️ Models not downloaded. Go to Settings to download models or switch to server mode.
+          </Text>
+          <Pressable
+            style={styles.warningButton}
+            onPress={() => navigation.navigate('Settings')}
+          >
+            <Text style={styles.warningButtonText}>Go to Settings</Text>
+          </Pressable>
+        </View>
+      )}
+
+      {processingMode === 'server' && connectionStatus === 'disconnected' && !isActive && (
+        <View style={styles.warningBanner}>
+          <Text style={styles.warningText}>
+            ⚠️ Server not connected. Make sure the backend is running at {settings.serverUrl}
+          </Text>
+        </View>
+      )}
+
       {/* Status bar */}
       <View style={styles.statusBar}>
         <ProcessingIndicator
@@ -261,5 +329,29 @@ const styles = StyleSheet.create({
   actionButtonText: {
     ...typography.label,
     color: colors.textPrimary,
+  },
+  warningBanner: {
+    backgroundColor: colors.warning + '20',
+    borderLeftWidth: 4,
+    borderLeftColor: colors.warning,
+    padding: spacing.md,
+    margin: spacing.md,
+    borderRadius: borderRadius.sm,
+  },
+  warningText: {
+    ...typography.bodySmall,
+    color: colors.warning,
+  },
+  warningButton: {
+    backgroundColor: colors.warning,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderRadius: borderRadius.md,
+    alignSelf: 'flex-start',
+    marginTop: spacing.sm,
+  },
+  warningButtonText: {
+    ...typography.label,
+    color: colors.surface,
   },
 });

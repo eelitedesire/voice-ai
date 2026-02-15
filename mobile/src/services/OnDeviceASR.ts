@@ -12,7 +12,6 @@ import { sherpaOnnx, ASRConfig } from '../native/SherpaOnnx';
 import { vad, VADConfig, VADEvent } from '../native/VAD';
 import { AUDIO_CONFIG, MODEL_PATHS } from '../config/api';
 import { OnDeviceTranscriptionResult, TranscriptEntry } from '../types';
-import RNFS from '../services/StorageService';
 
 type TranscriptionCallback = (result: OnDeviceTranscriptionResult) => void;
 type VADCallback = (isSpeaking: boolean) => void;
