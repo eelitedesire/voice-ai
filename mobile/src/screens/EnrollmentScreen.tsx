@@ -149,9 +149,16 @@ export function EnrollmentScreen() {
         offset += buffer.length;
       }
 
-      // Re-encode to base64
+      // Re-encode to base64 - process in chunks to avoid stack overflow
       const combinedBytes = new Uint8Array(combinedAudio.buffer);
-      const binaryString = String.fromCharCode(...combinedBytes);
+      const chunkSize = 8192; // Process 8KB at a time
+      let binaryString = '';
+
+      for (let i = 0; i < combinedBytes.length; i += chunkSize) {
+        const chunk = combinedBytes.slice(i, i + chunkSize);
+        binaryString += String.fromCharCode.apply(null, Array.from(chunk));
+      }
+
       const combinedBase64 = globalThis.btoa(binaryString);
 
       console.log(`[Enrollment] Combined ${decodedBuffers.length} buffers, total samples: ${totalLength}`);
