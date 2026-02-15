@@ -43,6 +43,8 @@ export function EnrollmentScreen() {
   const speakerService = useRef(new SpeakerIdentificationService());
   const audioBuffers = useRef<string[]>([]);
   const serviceInitialized = useRef(false);
+  const isProcessingEnrollment = useRef(false); // Guard against duplicate calls
+  const audioUnsubscribe = useRef<(() => void) | null>(null);
 
   const MIN_DURATION = 5; // seconds
   const MAX_DURATION = 15; // seconds
@@ -86,6 +88,7 @@ export function EnrollmentScreen() {
     setIsEnrolling(true);
     setEnrollProgress(0);
     audioBuffers.current = [];
+    isProcessingEnrollment.current = false;
 
     // Collect audio buffers
     const unsub = audioCapture.onAudioBuffer((event: AudioBufferEvent) => {
@@ -95,10 +98,12 @@ export function EnrollmentScreen() {
       setEnrollProgress(Math.min(seconds / MIN_DURATION, 1));
 
       // Auto-stop at max duration
-      if (seconds >= MAX_DURATION) {
+      if (seconds >= MAX_DURATION && !isProcessingEnrollment.current) {
         handleStopEnrollment();
       }
     });
+
+    audioUnsubscribe.current = unsub;
 
     try {
       await audioCapture.start({
@@ -110,10 +115,23 @@ export function EnrollmentScreen() {
       Alert.alert('Error', 'Failed to start recording. Check microphone permissions.');
       setIsEnrolling(false);
       unsub();
+      audioUnsubscribe.current = null;
     }
   }, [name]);
 
   const handleStopEnrollment = useCallback(async () => {
+    // Prevent duplicate calls
+    if (isProcessingEnrollment.current) {
+      return;
+    }
+    isProcessingEnrollment.current = true;
+
+    // Unsubscribe from audio events first
+    if (audioUnsubscribe.current) {
+      audioUnsubscribe.current();
+      audioUnsubscribe.current = null;
+    }
+
     await audioCapture.stop();
     setIsEnrolling(false);
 
@@ -125,6 +143,7 @@ export function EnrollmentScreen() {
         'Too Short',
         `Please record at least ${MIN_DURATION} seconds of speech.`,
       );
+      isProcessingEnrollment.current = false;
       return;
     }
 
@@ -178,6 +197,8 @@ export function EnrollmentScreen() {
         'Error',
         err instanceof Error ? err.message : 'Failed to process voice sample. Please try again.',
       );
+    } finally {
+      isProcessingEnrollment.current = false;
     }
   }, [name, role]);
 
@@ -297,13 +318,18 @@ export function EnrollmentScreen() {
           data={profiles}
           keyExtractor={item => item.id}
           renderItem={({ item }) => (
-            <Pressable
-              style={styles.profileRow}
-              onLongPress={() => handleDeleteProfile(item.id)}
-            >
-              <SpeakerBadge name={item.name} isActive />
-              <Text style={styles.profileRole}>{item.role}</Text>
-            </Pressable>
+            <View style={styles.profileRow}>
+              <View style={styles.profileInfo}>
+                <SpeakerBadge name={item.name} isActive />
+                <Text style={styles.profileRole}>{item.role}</Text>
+              </View>
+              <Pressable
+                style={styles.deleteIconButton}
+                onPress={() => handleDeleteProfile(item.id)}
+              >
+                <Text style={styles.deleteIcon}>✕</Text>
+              </Pressable>
+            </View>
           )}
           ListEmptyComponent={
             <Text style={styles.emptyText}>No speakers enrolled yet</Text>
@@ -413,10 +439,31 @@ const styles = StyleSheet.create({
     padding: spacing.md,
     marginBottom: spacing.sm,
   },
+  profileInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    flex: 1,
+  },
   profileRole: {
     ...typography.caption,
     color: colors.textMuted,
     textTransform: 'capitalize',
+  },
+  deleteIconButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: colors.error + '20',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: spacing.sm,
+  },
+  deleteIcon: {
+    ...typography.body,
+    color: colors.error,
+    fontSize: 18,
+    fontWeight: '600',
   },
   emptyText: {
     ...typography.body,
