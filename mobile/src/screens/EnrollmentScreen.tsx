@@ -5,7 +5,7 @@
  * on-device, and stores it locally for speaker identification.
  */
 
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import {
   View,
   Text,
@@ -14,12 +14,15 @@ import {
   Pressable,
   Alert,
   FlatList,
+  ActivityIndicator,
 } from 'react-native';
+import RNFS from 'react-native-fs';
 import { RecordButton } from '../components/RecordButton';
 import { AudioWaveform } from '../components/AudioWaveform';
 import { SpeakerBadge } from '../components/SpeakerBadge';
 import { SpeakerIdentificationService } from '../services/SpeakerIdentification';
 import { useAudioCapture } from '../hooks/useAudioCapture';
+import { useOnDeviceModels } from '../hooks/useOnDeviceModels';
 import { audioCapture, AudioBufferEvent } from '../native/AudioCapture';
 import { getSpeakerProfiles, saveSpeakerProfiles } from '../services/StorageService';
 import { SpeakerProfile } from '../types';
@@ -32,17 +35,51 @@ export function EnrollmentScreen() {
   const [isEnrolling, setIsEnrolling] = useState(false);
   const [enrollProgress, setEnrollProgress] = useState(0);
   const [profiles, setProfiles] = useState<SpeakerProfile[]>(getSpeakerProfiles);
+  const [isInitializing, setIsInitializing] = useState(false);
   const { audioLevel } = useAudioCapture();
 
+  const documentDir = RNFS.DocumentDirectoryPath;
+  const { status: modelStatus } = useOnDeviceModels(documentDir);
   const speakerService = useRef(new SpeakerIdentificationService());
   const audioBuffers = useRef<string[]>([]);
+  const serviceInitialized = useRef(false);
 
   const MIN_DURATION = 5; // seconds
   const MAX_DURATION = 15; // seconds
 
+  // Initialize speaker service when model is ready
+  useEffect(() => {
+    const initService = async () => {
+      if (modelStatus.speaker === 'ready' && !serviceInitialized.current) {
+        setIsInitializing(true);
+        try {
+          await speakerService.current.initialize(documentDir);
+          serviceInitialized.current = true;
+        } catch (err) {
+          console.error('[Enrollment] Failed to initialize speaker service:', err);
+          Alert.alert(
+            'Initialization Error',
+            'Failed to load speaker model. Please try restarting the app.',
+          );
+        } finally {
+          setIsInitializing(false);
+        }
+      }
+    };
+    initService();
+  }, [modelStatus.speaker, documentDir]);
+
   const handleStartEnrollment = useCallback(async () => {
     if (!name.trim()) {
       Alert.alert('Name Required', 'Please enter a name for this speaker.');
+      return;
+    }
+
+    if (!serviceInitialized.current) {
+      Alert.alert(
+        'Model Not Ready',
+        'Speaker model is not loaded. Please download models from Settings first.',
+      );
       return;
     }
 
@@ -95,7 +132,6 @@ export function EnrollmentScreen() {
       // Concatenate all audio buffers for enrollment
       const combinedBase64 = audioBuffers.current.join('');
 
-      await speakerService.current.initialize('/var/mobile');
       const profile = await speakerService.current.enrollSpeaker(
         name.trim(),
         role,
@@ -106,7 +142,11 @@ export function EnrollmentScreen() {
       setName('');
       Alert.alert('Enrolled', `${profile.name} has been enrolled successfully.`);
     } catch (err) {
-      Alert.alert('Error', 'Failed to process voice sample. Please try again.');
+      console.error('[Enrollment] Error:', err);
+      Alert.alert(
+        'Error',
+        err instanceof Error ? err.message : 'Failed to process voice sample. Please try again.',
+      );
     }
   }, [name, role]);
 
@@ -127,6 +167,23 @@ export function EnrollmentScreen() {
 
   return (
     <View style={styles.container}>
+      {/* Model status warning */}
+      {modelStatus.speaker !== 'ready' && (
+        <View style={styles.warningBanner}>
+          <Text style={styles.warningText}>
+            ⚠️ Speaker model not downloaded. Go to Settings to download models.
+          </Text>
+        </View>
+      )}
+
+      {/* Loading indicator */}
+      {isInitializing && (
+        <View style={styles.loadingBanner}>
+          <ActivityIndicator size="small" color={colors.primary} />
+          <Text style={styles.loadingText}>Loading speaker model...</Text>
+        </View>
+      )}
+
       {/* Enrollment form */}
       <View style={styles.form}>
         <Text style={styles.heading}>Enroll New Speaker</Text>
@@ -335,5 +392,31 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     textAlign: 'center',
     paddingVertical: spacing.lg,
+  },
+  warningBanner: {
+    backgroundColor: colors.warning + '20',
+    borderLeftWidth: 4,
+    borderLeftColor: colors.warning,
+    padding: spacing.md,
+    margin: spacing.md,
+    borderRadius: borderRadius.sm,
+  },
+  warningText: {
+    ...typography.bodySmall,
+    color: colors.warning,
+  },
+  loadingBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: spacing.md,
+    gap: spacing.sm,
+    backgroundColor: colors.surface,
+    borderRadius: borderRadius.md,
+    margin: spacing.md,
+  },
+  loadingText: {
+    ...typography.bodySmall,
+    color: colors.textSecondary,
   },
 });
