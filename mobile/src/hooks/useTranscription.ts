@@ -45,6 +45,7 @@ export function useTranscription(documentDir: string): UseTranscriptionReturn {
 
   const onDeviceRef = useRef<OnDeviceASR | null>(null);
   const streamingRef = useRef<StreamingService | null>(null);
+  const cleanupCallbacksRef = useRef<(() => void)[]>([]);
 
   // Initialize services
   useEffect(() => {
@@ -59,7 +60,7 @@ export function useTranscription(documentDir: string): UseTranscriptionReturn {
         }
       }
 
-      if (processingMode === 'server' || processingMode === 'hybrid') {
+      if (processingMode === 'server') {
         const streaming = new StreamingService(settings.serverUrl);
         streaming.onStatusChange(setConnectionStatus);
         streamingRef.current = streaming;
@@ -67,6 +68,11 @@ export function useTranscription(documentDir: string): UseTranscriptionReturn {
         streaming.connect().catch((err) => {
           console.warn('Initial server connection failed:', err);
         });
+      }
+
+      // In hybrid mode, set connection status based on whether on-device ASR is ready
+      if (processingMode === 'hybrid') {
+        setConnectionStatus(onDeviceRef.current ? 'connected' : 'disconnected');
       }
     };
 
@@ -86,7 +92,7 @@ export function useTranscription(documentDir: string): UseTranscriptionReturn {
       onDeviceRef.current;
 
     if (useOnDevice) {
-      onDeviceRef.current!.onTranscription(
+      const unsubTranscription = onDeviceRef.current!.onTranscription(
         (result: OnDeviceTranscriptionResult) => {
           if (result.isFinal) {
             setTranscript(prev => [
@@ -104,10 +110,14 @@ export function useTranscription(documentDir: string): UseTranscriptionReturn {
         },
       );
 
-      onDeviceRef.current!.onVADChange(setIsSpeaking);
-      onDeviceRef.current!.onAudioLevel((rms, peak) => {
+      const unsubVAD = onDeviceRef.current!.onVADChange(setIsSpeaking);
+      const unsubAudioLevel = onDeviceRef.current!.onAudioLevel((rms, peak) => {
         setAudioLevel({ rms, peak });
       });
+
+      // Store cleanup functions
+      cleanupCallbacksRef.current = [unsubTranscription, unsubVAD, unsubAudioLevel];
+
       await onDeviceRef.current!.start();
     } else if (streamingRef.current) {
       streamingRef.current.onMessage((msg: StreamingServerMessage) => {
@@ -136,6 +146,10 @@ export function useTranscription(documentDir: string): UseTranscriptionReturn {
 
   const stop = useCallback(async (): Promise<TranscriptEntry[]> => {
     if (!isActive) return transcript;
+
+    // Clean up callbacks first
+    cleanupCallbacksRef.current.forEach(cleanup => cleanup());
+    cleanupCallbacksRef.current = [];
 
     let result: TranscriptEntry[];
 
