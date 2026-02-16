@@ -63,6 +63,10 @@ export function useTranscription(documentDir: string): UseTranscriptionReturn {
         const streaming = new StreamingService(settings.serverUrl);
         streaming.onStatusChange(setConnectionStatus);
         streamingRef.current = streaming;
+        // Connect immediately to check server availability
+        streaming.connect().catch((err) => {
+          console.warn('Initial server connection failed:', err);
+        });
       }
     };
 
