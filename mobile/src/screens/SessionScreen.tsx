@@ -196,6 +196,7 @@ export function SessionScreen() {
       <View style={styles.statusBar}>
         <ProcessingIndicator
           mode={processingMode}
+          modelStatus={modelStatus}
           connectionStatus={connectionStatus}
         />
         {isActive && <Text style={styles.timer}>{formatElapsed(elapsed)}</Text>}
