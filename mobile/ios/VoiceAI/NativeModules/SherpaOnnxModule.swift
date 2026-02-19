@@ -1,33 +1,33 @@
 /**
  * SherpaOnnxModule — iOS native module for on-device ASR and speaker embedding.
  *
- * Wraps sherpa-onnx C API via the sherpa-onnx iOS framework.
- * All ML inference runs on-device using ONNX Runtime with CoreML EP acceleration.
+ * Uses Apple's Speech framework (SFSpeechRecognizer) for on-device transcription.
+ * No external model files are required — the system's on-device recognition model
+ * is used automatically (iOS 13+, Neural Engine accelerated on A/M-series chips).
  *
- * Models:
- *   ASR:     Zipformer transducer (encoder + decoder + joiner)
- *   Speaker: WeSpeaker ResNet34 for voiceprint extraction
- *
- * Performance on iPhone 14:
- *   ASR inference:     ~15ms per audio chunk (real-time factor < 0.1)
- *   Speaker embedding: ~50ms per 5-second clip
+ * Speaker embedding extraction is not available via this framework; the methods
+ * are kept API-compatible but return zero-vectors so the rest of the pipeline
+ * (cosine-similarity speaker matching) can still operate if voiceprints are
+ * pre-enrolled via the server.
  */
 
 import Foundation
 import React
-
-// These types would be provided by the sherpa-onnx iOS framework.
-// Declared here as protocol stubs for compilation without the framework.
+import Speech
+import AVFoundation
 
 @objc(SherpaOnnxModule)
 class SherpaOnnxModule: RCTEventEmitter {
 
-  // Opaque handles — initialized from C API
-  private var recognizer: UnsafeMutableRawPointer?
-  private var recognizerStream: UnsafeMutableRawPointer?
-  private var speakerExtractor: UnsafeMutableRawPointer?
+  private var speechRecognizer: SFSpeechRecognizer?
+  private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
+  private var recognitionTask: SFSpeechRecognitionTask?
+  private var audioFormat: AVAudioFormat?
   private var isASRInitialized = false
   private var isSpeakerInitialized = false
+
+  // Serial queue so feedAudio / resetASR calls never race
+  private let asrQueue = DispatchQueue(label: "com.voiceai.asr", qos: .userInteractive)
 
   override static func requiresMainQueueSetup() -> Bool {
     return false
@@ -44,38 +44,83 @@ class SherpaOnnxModule: RCTEventEmitter {
     resolver resolve: @escaping RCTPromiseResolveBlock,
     rejecter reject: @escaping RCTPromiseRejectBlock
   ) {
-    let encoderPath = config["encoderPath"] as? String ?? ""
-    let decoderPath = config["decoderPath"] as? String ?? ""
-    let joinerPath = config["joinerPath"] as? String ?? ""
-    let tokensPath = config["tokensPath"] as? String ?? ""
-    let numThreads = config["numThreads"] as? Int32 ?? 2
-    let sampleRate = config["sampleRate"] as? Int32 ?? 16000
+    let sampleRate = config["sampleRate"] as? Double ?? 16000.0
 
-    // In production, this calls:
-    //   SherpaOnnxOnlineRecognizerConfig → SherpaOnnxCreateOnlineRecognizer()
-    //
-    // The sherpa-onnx iOS framework provides C functions:
-    //   - SherpaOnnxCreateOnlineRecognizer(config) → pointer
-    //   - SherpaOnnxCreateOnlineStream(recognizer) → stream pointer
-    //   - SherpaOnnxOnlineStreamAcceptWaveform(stream, sampleRate, samples, n)
-    //   - SherpaOnnxDecodeOnlineStream(recognizer, stream)
-    //   - SherpaOnnxOnlineStreamIsEndpoint(recognizer, stream) → bool
-    //   - SherpaOnnxGetOnlineStreamResult(recognizer, stream) → text
-    //   - SherpaOnnxOnlineStreamReset(recognizer, stream)
-    //
-    // For this bridge, we initialize the recognizer and store the handles.
+    SFSpeechRecognizer.requestAuthorization { [weak self] status in
+      guard let self = self else { return }
+      switch status {
+      case .authorized:
+        // Prefer the system locale; fall back to en-US so we always have a recognizer
+        let locale = Locale.current.language.languageCode != nil
+          ? Locale.current
+          : Locale(identifier: "en-US")
+        self.speechRecognizer = SFSpeechRecognizer(locale: locale)
+        self.speechRecognizer?.defaultTaskHint = .dictation
 
-    guard FileManager.default.fileExists(atPath: encoderPath) else {
-      reject("MODEL_NOT_FOUND", "ASR encoder model not found at \(encoderPath)", nil)
-      return
+        self.audioFormat = AVAudioFormat(
+          commonFormat: .pcmFormatFloat32,
+          sampleRate: sampleRate,
+          channels: 1,
+          interleaved: false
+        )
+        self.isASRInitialized = true
+        resolve(nil)
+
+      case .denied:
+        reject("PERMISSION_DENIED", "Speech recognition permission was denied", nil)
+      case .restricted:
+        reject("PERMISSION_RESTRICTED", "Speech recognition is restricted on this device", nil)
+      case .notDetermined:
+        reject("PERMISSION_NOT_DETERMINED", "Speech recognition permission not yet determined", nil)
+      @unknown default:
+        reject("PERMISSION_ERROR", "Unknown speech recognition permission status", nil)
+      }
+    }
+  }
+
+  // Starts a fresh SFSpeechAudioBufferRecognitionRequest and recognition task.
+  // Must be called from asrQueue.
+  private func startRecognitionTaskLocked() {
+    guard let recognizer = speechRecognizer, recognizer.isAvailable,
+          let format = audioFormat else { return }
+
+    let request = SFSpeechAudioBufferRecognitionRequest()
+    request.shouldReportPartialResults = true
+    if #available(iOS 13, *) {
+      request.requiresOnDeviceRecognition = true
     }
 
-    // TODO: Initialize sherpa-onnx recognizer via C API
-    // recognizer = SherpaOnnxCreateOnlineRecognizer(...)
-    // recognizerStream = SherpaOnnxCreateOnlineStream(recognizer)
+    recognitionRequest = request
 
-    isASRInitialized = true
-    resolve(nil)
+    recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
+      guard let self = self else { return }
+
+      if let result = result {
+        let text = result.bestTranscription.formattedString
+        let timestamp = Int(Date().timeIntervalSince1970 * 1000)
+        if result.isFinal {
+          self.sendEvent(withName: "onFinalResult", body: [
+            "text": text,
+            "timestamp": timestamp,
+            "isEndpoint": true,
+          ])
+        } else if !text.isEmpty {
+          self.sendEvent(withName: "onPartialResult", body: [
+            "text": text,
+            "timestamp": timestamp,
+          ])
+        }
+      }
+
+      if error != nil || (result?.isFinal ?? false) {
+        self.asrQueue.async { [weak self] in
+          self?.recognitionTask = nil
+          self?.recognitionRequest = nil
+        }
+      }
+    }
+
+    _ = format // silence unused-variable warning; format stored on self
   }
 
   @objc func feedAudio(
@@ -93,31 +138,44 @@ class SherpaOnnxModule: RCTEventEmitter {
       return
     }
 
-    // Convert Data to Float32 array
-    let sampleCount = data.count / MemoryLayout<Float>.size
-    var samples = [Float](repeating: 0, count: sampleCount)
-    _ = samples.withUnsafeMutableBytes { data.copyBytes(to: $0) }
+    asrQueue.async { [weak self] in
+      guard let self = self, let format = self.audioFormat else { return }
 
-    // In production:
-    //   SherpaOnnxOnlineStreamAcceptWaveform(recognizerStream, 16000, &samples, Int32(sampleCount))
-    //   SherpaOnnxDecodeOnlineStream(recognizer, recognizerStream)
-    //
-    //   let result = SherpaOnnxGetOnlineStreamResult(recognizer, recognizerStream)
-    //   let text = String(cString: result.pointee.text)
-    //   sendEvent(withName: "onPartialResult", body: ["text": text, "timestamp": ...])
+      // Start a new recognition task if one is not already running
+      if self.recognitionTask == nil {
+        self.startRecognitionTaskLocked()
+      }
 
-    resolve(nil)
+      let sampleCount = data.count / MemoryLayout<Float>.size
+      guard sampleCount > 0,
+            let buffer = AVAudioPCMBuffer(
+              pcmFormat: format,
+              frameCapacity: AVAudioFrameCount(sampleCount)
+            ) else {
+        resolve(nil)
+        return
+      }
+
+      buffer.frameLength = AVAudioFrameCount(sampleCount)
+      if let channelData = buffer.floatChannelData?[0] {
+        data.withUnsafeBytes { rawBytes in
+          if let floatPtr = rawBytes.baseAddress?.assumingMemoryBound(to: Float.self) {
+            channelData.update(from: floatPtr, count: sampleCount)
+          }
+        }
+      }
+
+      self.recognitionRequest?.append(buffer)
+      resolve(nil)
+    }
   }
 
   @objc func isEndpoint(
     _ resolve: @escaping RCTPromiseResolveBlock,
     rejecter reject: @escaping RCTPromiseRejectBlock
   ) {
-    guard isASRInitialized else {
-      resolve(false)
-      return
-    }
-    // In production: SherpaOnnxOnlineStreamIsEndpoint(recognizer, recognizerStream)
+    // Endpoint detection is driven externally by the VAD (OnDeviceASR.ts calls
+    // resetASR when VAD transitions to silence). Always return false here.
     resolve(false)
   }
 
@@ -125,11 +183,7 @@ class SherpaOnnxModule: RCTEventEmitter {
     _ resolve: @escaping RCTPromiseResolveBlock,
     rejecter reject: @escaping RCTPromiseRejectBlock
   ) {
-    guard isASRInitialized else {
-      resolve("")
-      return
-    }
-    // In production: SherpaOnnxGetOnlineStreamResult(recognizer, recognizerStream)
+    // Partial results are delivered as events (onPartialResult); no polling needed.
     resolve("")
   }
 
@@ -137,39 +191,45 @@ class SherpaOnnxModule: RCTEventEmitter {
     _ resolve: @escaping RCTPromiseResolveBlock,
     rejecter reject: @escaping RCTPromiseRejectBlock
   ) {
-    // In production: SherpaOnnxOnlineStreamReset(recognizer, recognizerStream)
-    resolve(nil)
+    asrQueue.async { [weak self] in
+      guard let self = self else { resolve(nil); return }
+      // endAudio() signals to the recognizer that no more audio is coming,
+      // causing it to finalize and fire the completion with isFinal = true.
+      self.recognitionRequest?.endAudio()
+      self.recognitionRequest = nil
+      self.recognitionTask?.cancel()
+      self.recognitionTask = nil
+      resolve(nil)
+    }
   }
 
   @objc func releaseASR(
     _ resolve: @escaping RCTPromiseResolveBlock,
     rejecter reject: @escaping RCTPromiseRejectBlock
   ) {
-    // In production:
-    //   SherpaOnnxDestroyOnlineStream(recognizerStream)
-    //   SherpaOnnxDestroyOnlineRecognizer(recognizer)
-    recognizer = nil
-    recognizerStream = nil
-    isASRInitialized = false
-    resolve(nil)
+    asrQueue.async { [weak self] in
+      guard let self = self else { resolve(nil); return }
+      self.recognitionRequest?.endAudio()
+      self.recognitionRequest = nil
+      self.recognitionTask?.cancel()
+      self.recognitionTask = nil
+      self.speechRecognizer = nil
+      self.isASRInitialized = false
+      resolve(nil)
+    }
   }
 
   // MARK: - Speaker Embedding
+  // SFSpeechRecognizer does not expose speaker embeddings.
+  // The methods below keep the JS API intact so the rest of the
+  // pipeline compiles and runs; cosine-similarity matching falls
+  // through to "Unknown" speaker when embeddings are all zeros.
 
   @objc func initSpeakerModel(
     _ config: NSDictionary,
     resolver resolve: @escaping RCTPromiseResolveBlock,
     rejecter reject: @escaping RCTPromiseRejectBlock
   ) {
-    let modelPath = config["modelPath"] as? String ?? ""
-
-    guard FileManager.default.fileExists(atPath: modelPath) else {
-      reject("MODEL_NOT_FOUND", "Speaker model not found at \(modelPath)", nil)
-      return
-    }
-
-    // In production:
-    //   SherpaOnnxSpeakerEmbeddingExtractorConfig → SherpaOnnxCreateSpeakerEmbeddingExtractor()
     isSpeakerInitialized = true
     resolve(nil)
   }
@@ -179,23 +239,6 @@ class SherpaOnnxModule: RCTEventEmitter {
     resolver resolve: @escaping RCTPromiseResolveBlock,
     rejecter reject: @escaping RCTPromiseRejectBlock
   ) {
-    guard isSpeakerInitialized else {
-      reject("NOT_INITIALIZED", "Speaker model not initialized", nil)
-      return
-    }
-
-    guard let data = Data(base64Encoded: base64Samples) else {
-      reject("DECODE_ERROR", "Failed to decode base64 audio", nil)
-      return
-    }
-
-    // In production:
-    //   - Create speaker stream
-    //   - Feed audio samples
-    //   - Compute embedding
-    //   - Return as [Float] → [NSNumber]
-
-    // Placeholder: return empty embedding
     resolve([Float](repeating: 0, count: 256))
   }
 
@@ -203,7 +246,6 @@ class SherpaOnnxModule: RCTEventEmitter {
     _ resolve: @escaping RCTPromiseResolveBlock,
     rejecter reject: @escaping RCTPromiseRejectBlock
   ) {
-    speakerExtractor = nil
     isSpeakerInitialized = false
     resolve(nil)
   }
@@ -215,7 +257,7 @@ class SherpaOnnxModule: RCTEventEmitter {
     resolver resolve: @escaping RCTPromiseResolveBlock,
     rejecter reject: @escaping RCTPromiseRejectBlock
   ) {
-    let allExist = paths.allSatisfy { FileManager.default.fileExists(atPath: $0) }
-    resolve(allExist)
+    // SFSpeechRecognizer uses the built-in system model — no files to check.
+    resolve(true)
   }
 }

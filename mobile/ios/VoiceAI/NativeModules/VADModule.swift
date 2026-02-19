@@ -1,8 +1,23 @@
 /**
  * VADModule — iOS native module for on-device Voice Activity Detection.
  *
- * Runs Silero VAD v5 via ONNX Runtime Mobile with CoreML EP.
- * Processing time: ~0.3ms per 30ms frame on iPhone 14.
+ * Implements an energy-based VAD using RMS amplitude of the incoming Float32 PCM
+ * audio. Uses hysteresis (separate speech-start and speech-end counters) to avoid
+ * rapid state flapping on breath sounds or brief silences.
+ *
+ * This avoids requiring an external ONNX runtime / Silero model on-device while
+ * still providing reliable voice/silence discrimination for mic-recorded speech.
+ *
+ * Typical energy levels (normalized Float32 PCM, mic at arm's length):
+ *   Background noise:  RMS ~0.003 – 0.010
+ *   Soft speech:       RMS ~0.015 – 0.040
+ *   Normal speech:     RMS ~0.040 – 0.150
+ *
+ * The threshold is derived from the caller's `threshold` param (0–1 scale where
+ * higher = less sensitive) via: energyThreshold = 0.005 + threshold * 0.045
+ *   threshold 0.0 → 0.005  (catches near-whispers)
+ *   threshold 0.5 → 0.028  (default, normal speech)
+ *   threshold 1.0 → 0.050  (only loud speech)
  */
 
 import Foundation
@@ -13,7 +28,15 @@ class VADModule: RCTEventEmitter {
 
   private var isInitialized = false
   private var currentIsSpeaking = false
-  private var threshold: Float = 0.5
+
+  // Derived from config
+  private var energyThreshold: Float = 0.028
+  private var minSpeechFrames: Int = 8    // consecutive voiced frames before declaring speech
+  private var minSilenceFrames: Int = 10  // consecutive silent frames before ending speech
+
+  // Hysteresis counters
+  private var voicedFrameCount: Int = 0
+  private var silentFrameCount: Int = 0
 
   override static func requiresMainQueueSetup() -> Bool {
     return false
@@ -28,19 +51,18 @@ class VADModule: RCTEventEmitter {
     resolver resolve: @escaping RCTPromiseResolveBlock,
     rejecter reject: @escaping RCTPromiseRejectBlock
   ) {
-    let modelPath = config["modelPath"] as? String ?? ""
-    threshold = config["threshold"] as? Float ?? 0.5
+    let threshold = config["threshold"] as? Float ?? 0.5
+    let frameSizeMs = config["frameSizeMs"] as? Int ?? 30
+    let minSpeechMs = config["minSpeechDurationMs"] as? Int ?? 250
+    let minSilenceMs = config["minSilenceDurationMs"] as? Int ?? 300
 
-    guard FileManager.default.fileExists(atPath: modelPath) else {
-      reject("MODEL_NOT_FOUND", "VAD model not found at \(modelPath)", nil)
-      return
-    }
+    energyThreshold = 0.005 + threshold * 0.045
+    minSpeechFrames = max(1, minSpeechMs / frameSizeMs)
+    minSilenceFrames = max(1, minSilenceMs / frameSizeMs)
 
-    // In production:
-    //   - Load Silero VAD ONNX model via ORT Mobile
-    //   - Configure with CoreML execution provider
-    //   - Pre-allocate input/output tensors
-
+    voicedFrameCount = 0
+    silentFrameCount = 0
+    currentIsSpeaking = false
     isInitialized = true
     resolve(nil)
   }
@@ -55,13 +77,52 @@ class VADModule: RCTEventEmitter {
       return
     }
 
-    // In production:
-    //   - Decode base64 → Float32 samples
-    //   - Run Silero VAD inference → speech probability
-    //   - Apply threshold + min duration logic
-    //   - Emit state change event if changed
+    guard let data = Data(base64Encoded: base64Samples),
+          data.count >= MemoryLayout<Float>.size else {
+      resolve(currentIsSpeaking)
+      return
+    }
 
-    // Placeholder: return current state
+    // Calculate RMS energy of the audio chunk
+    let sampleCount = data.count / MemoryLayout<Float>.size
+    var sumSquares: Float = 0
+    data.withUnsafeBytes { rawBytes in
+      if let floatPtr = rawBytes.baseAddress?.assumingMemoryBound(to: Float.self) {
+        for i in 0..<sampleCount {
+          let s = floatPtr[i]
+          sumSquares += s * s
+        }
+      }
+    }
+    let rms = (sumSquares / Float(sampleCount)).squareRoot()
+    let isVoiced = rms >= energyThreshold
+
+    let previouslySpeaking = currentIsSpeaking
+
+    if isVoiced {
+      voicedFrameCount += 1
+      silentFrameCount = 0
+      if !currentIsSpeaking && voicedFrameCount >= minSpeechFrames {
+        currentIsSpeaking = true
+      }
+    } else {
+      silentFrameCount += 1
+      voicedFrameCount = 0
+      if currentIsSpeaking && silentFrameCount >= minSilenceFrames {
+        currentIsSpeaking = false
+      }
+    }
+
+    if currentIsSpeaking != previouslySpeaking {
+      let timestamp = Int(Date().timeIntervalSince1970 * 1000)
+      let probability: Float = isVoiced ? min(rms / energyThreshold, 1.0) : 0.0
+      sendEvent(withName: "onVADStateChange", body: [
+        "isSpeaking": currentIsSpeaking,
+        "probability": probability,
+        "timestamp": timestamp,
+      ])
+    }
+
     resolve(currentIsSpeaking)
   }
 
@@ -70,7 +131,8 @@ class VADModule: RCTEventEmitter {
     rejecter reject: @escaping RCTPromiseRejectBlock
   ) {
     currentIsSpeaking = false
-    // In production: reset VAD internal state (h, c tensors)
+    voicedFrameCount = 0
+    silentFrameCount = 0
     resolve(nil)
   }
 
@@ -80,6 +142,8 @@ class VADModule: RCTEventEmitter {
   ) {
     isInitialized = false
     currentIsSpeaking = false
+    voicedFrameCount = 0
+    silentFrameCount = 0
     resolve(nil)
   }
 }

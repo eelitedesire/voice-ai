@@ -26,6 +26,8 @@
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Voice AI needs microphone access to record therapy sessions and enroll speaker voiceprints.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Voice AI uses on-device speech recognition to transcribe therapy sessions without sending audio to the cloud.</string>
 	<key>RCTNewArchEnabled</key>
 	<true/>
 	<key>UILaunchScreen</key>
