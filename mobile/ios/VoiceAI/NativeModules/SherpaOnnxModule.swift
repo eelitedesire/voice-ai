@@ -81,8 +81,7 @@ class SherpaOnnxModule: RCTEventEmitter {
   // Starts a fresh SFSpeechAudioBufferRecognitionRequest and recognition task.
   // Must be called from asrQueue.
   private func startRecognitionTaskLocked() {
-    guard let recognizer = speechRecognizer, recognizer.isAvailable,
-          let format = audioFormat else { return }
+    guard let recognizer = speechRecognizer, recognizer.isAvailable else { return }
 
     let request = SFSpeechAudioBufferRecognitionRequest()
     request.shouldReportPartialResults = true
@@ -119,8 +118,6 @@ class SherpaOnnxModule: RCTEventEmitter {
         }
       }
     }
-
-    _ = format // silence unused-variable warning; format stored on self
   }
 
   @objc func feedAudio(

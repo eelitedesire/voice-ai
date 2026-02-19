@@ -36,7 +36,7 @@ class VADManager {
   }
 
   async init(config: VADConfig): Promise<void> {
-    return VADModule.init(config);
+    return VADModule.initVAD(config);
   }
 
   async release(): Promise<void> {

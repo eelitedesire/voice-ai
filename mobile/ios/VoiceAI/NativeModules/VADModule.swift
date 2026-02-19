@@ -46,7 +46,7 @@ class VADModule: RCTEventEmitter {
     return ["onVADStateChange"]
   }
 
-  @objc func `init`(
+  @objc func initVAD(
     _ config: NSDictionary,
     resolver resolve: @escaping RCTPromiseResolveBlock,
     rejecter reject: @escaping RCTPromiseRejectBlock
