@@ -111,9 +111,11 @@ export function useTranscription(documentDir: string): UseTranscriptionReturn {
       );
 
       const unsubVAD = onDeviceRef.current!.onVADChange(setIsSpeaking);
-      const unsubAudioLevel = onDeviceRef.current!.onAudioLevel((rms, peak) => {
-        setAudioLevel({ rms, peak });
-      });
+      const unsubAudioLevel = typeof onDeviceRef.current!.onAudioLevel === 'function'
+        ? onDeviceRef.current!.onAudioLevel((rms, peak) => {
+            setAudioLevel({ rms, peak });
+          })
+        : () => {};
 
       // Store cleanup functions
       cleanupCallbacksRef.current = [unsubTranscription, unsubVAD, unsubAudioLevel];
