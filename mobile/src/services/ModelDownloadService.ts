@@ -5,8 +5,21 @@
  * Supports progress callbacks and automatic extraction of tar.bz2 archives.
  */
 
-import RNFS from 'react-native-fs';
 import { MODEL_PATHS } from '../config/api';
+
+// Lazy-load react-native-fs to avoid its module-level NativeEventEmitter throw
+// under New Architecture when RNFSManager is not yet registered at import time.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let _rnfs: any = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function getRNFS(): any {
+  if (!_rnfs) {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const mod = require('react-native-fs');
+    _rnfs = mod.default ?? mod;
+  }
+  return _rnfs;
+}
 
 export interface DownloadProgress {
   totalBytes: number;
@@ -79,12 +92,12 @@ export class ModelDownloadService {
         const targetPath = `${this.documentDir}/${file.path}`;
 
         // Skip if already exists
-        const exists = await RNFS.exists(targetPath);
+        const exists = await getRNFS().exists(targetPath);
         if (exists) continue;
 
         console.log(`[ModelDownload] Downloading ${file.name}...`);
 
-        const downloadResult = await RNFS.downloadFile({
+        const downloadResult = await getRNFS().downloadFile({
           fromUrl: file.url,
           toFile: targetPath,
           progressInterval: 500,
@@ -132,13 +145,13 @@ export class ModelDownloadService {
       const targetPath = `${this.documentDir}/${MODEL_PATHS.speakerEncoder}`;
 
       // Check if already exists
-      const exists = await RNFS.exists(targetPath);
+      const exists = await getRNFS().exists(targetPath);
       if (exists) {
         return { success: true, path: targetPath };
       }
 
       // Download directly (single .onnx file)
-      const downloadResult = await RNFS.downloadFile({
+      const downloadResult = await getRNFS().downloadFile({
         fromUrl: MODEL_URLS.speaker,
         toFile: targetPath,
         progressInterval: 500,
@@ -182,13 +195,13 @@ export class ModelDownloadService {
       const targetPath = `${this.documentDir}/${MODEL_PATHS.vad}`;
 
       // Check if already exists
-      const exists = await RNFS.exists(targetPath);
+      const exists = await getRNFS().exists(targetPath);
       if (exists) {
         return { success: true, path: targetPath };
       }
 
       // Download directly (single .onnx file)
-      const downloadResult = await RNFS.downloadFile({
+      const downloadResult = await getRNFS().downloadFile({
         fromUrl: MODEL_URLS.vad,
         toFile: targetPath,
         progressInterval: 500,
@@ -265,9 +278,9 @@ export class ModelDownloadService {
    * Delete all downloaded models
    */
   async deleteAllModels(): Promise<void> {
-    const exists = await RNFS.exists(this.modelsDir);
+    const exists = await getRNFS().exists(this.modelsDir);
     if (exists) {
-      await RNFS.unlink(this.modelsDir);
+      await getRNFS().unlink(this.modelsDir);
     }
   }
 
@@ -275,19 +288,19 @@ export class ModelDownloadService {
    * Get total size of downloaded models
    */
   async getModelsSize(): Promise<number> {
-    const exists = await RNFS.exists(this.modelsDir);
+    const exists = await getRNFS().exists(this.modelsDir);
     if (!exists) return 0;
 
-    const files = await RNFS.readDir(this.modelsDir);
+    const files = await getRNFS().readDir(this.modelsDir);
     return files.reduce((total, file) => total + file.size, 0);
   }
 
   // --- Private helpers ---
 
   private async ensureModelsDirectory(): Promise<void> {
-    const exists = await RNFS.exists(this.modelsDir);
+    const exists = await getRNFS().exists(this.modelsDir);
     if (!exists) {
-      await RNFS.mkdir(this.modelsDir);
+      await getRNFS().mkdir(this.modelsDir);
     }
   }
 
@@ -300,7 +313,7 @@ export class ModelDownloadService {
       `${this.documentDir}/${MODEL_PATHS.asrTokens}`,
     ];
 
-    const results = await Promise.all(paths.map((p) => RNFS.exists(p)));
+    const results = await Promise.all(paths.map((p) => getRNFS().exists(p)));
     return results.every((exists) => exists);
   }
 
