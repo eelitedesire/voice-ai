@@ -51,7 +51,7 @@ class SherpaOnnxModule: RCTEventEmitter {
       switch status {
       case .authorized:
         // Prefer the system locale; fall back to en-US so we always have a recognizer
-        let locale = Locale.current.language.languageCode != nil
+        let locale = Locale.current.languageCode != nil
           ? Locale.current
           : Locale(identifier: "en-US")
         self.speechRecognizer = SFSpeechRecognizer(locale: locale)
