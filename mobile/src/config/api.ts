@@ -34,11 +34,12 @@ export const AUDIO_CONFIG = {
 } as const;
 
 // Model file paths (relative to app's document directory)
+// Using int8 quantized models for mobile efficiency
 export const MODEL_PATHS = {
-  asrEncoder: 'models/encoder-epoch-99-avg-1.onnx',
-  asrDecoder: 'models/decoder-epoch-99-avg-1.onnx',
-  asrJoiner: 'models/joiner-epoch-99-avg-1.onnx',
+  asrEncoder: 'models/encoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx',
+  asrDecoder: 'models/decoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx',
+  asrJoiner: 'models/joiner-epoch-99-avg-1-chunk-16-left-128.int8.onnx',
   asrTokens: 'models/tokens.txt',
   vad: 'models/silero_vad.onnx',
-  speakerEncoder: 'models/wespeaker_resnet34.onnx',
+  speakerEncoder: 'models/wespeaker_en_voxceleb_resnet34.onnx',
 } as const;

@@ -12,7 +12,7 @@
  *   - Offline transcript queue
  */
 
-import { MMKV } from 'react-native-mmkv';
+import { createMMKV } from 'react-native-mmkv';
 import {
   AppSettings,
   SpeakerProfile,
@@ -23,7 +23,7 @@ import {
 } from '../types';
 import { DEFAULT_SERVER_URL } from '../config/api';
 
-const storage = new MMKV();
+const storage = createMMKV();
 
 // --- Keys ---
 const KEYS = {

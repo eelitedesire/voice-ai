@@ -12,10 +12,10 @@ import { sherpaOnnx, ASRConfig } from '../native/SherpaOnnx';
 import { vad, VADConfig, VADEvent } from '../native/VAD';
 import { AUDIO_CONFIG, MODEL_PATHS } from '../config/api';
 import { OnDeviceTranscriptionResult, TranscriptEntry } from '../types';
-import RNFS from '../services/StorageService';
 
 type TranscriptionCallback = (result: OnDeviceTranscriptionResult) => void;
 type VADCallback = (isSpeaking: boolean) => void;
+type AudioLevelCallback = (rms: number, peak: number) => void;
 
 interface SpeakerReference {
   name: string;
@@ -26,6 +26,7 @@ export class OnDeviceASR {
   private isRunning = false;
   private transcriptionCallbacks: TranscriptionCallback[] = [];
   private vadCallbacks: VADCallback[] = [];
+  private audioLevelCallbacks: AudioLevelCallback[] = [];
   private currentText = '';
   private isSpeaking = false;
   private speechStartTime = 0;
@@ -38,11 +39,14 @@ export class OnDeviceASR {
   private transcript: TranscriptEntry[] = [];
 
   private unsubscribeAudio: (() => void) | null = null;
+  private unsubscribeAudioLevel: (() => void) | null = null;
   private unsubscribeVAD: (() => void) | null = null;
   private unsubscribePartial: (() => void) | null = null;
   private unsubscribeFinal: (() => void) | null = null;
 
   async initialize(documentDir: string): Promise<void> {
+    console.log('[OnDeviceASR] Initializing with documentDir:', documentDir);
+
     // Initialize VAD
     const vadConfig: VADConfig = {
       modelPath: `${documentDir}/${MODEL_PATHS.vad}`,
@@ -53,7 +57,9 @@ export class OnDeviceASR {
       minSpeechDurationMs: 250,
       speechPadMs: 100,
     };
+    console.log('[OnDeviceASR] Initializing VAD with config:', vadConfig);
     await vad.init(vadConfig);
+    console.log('[OnDeviceASR] VAD initialized successfully');
 
     // Initialize ASR
     const asrConfig: ASRConfig = {
@@ -68,11 +74,14 @@ export class OnDeviceASR {
       rule2MinTrailingSilence: 1.2,
       rule3MinUtteranceLength: 20,
     };
+    console.log('[OnDeviceASR] Initializing ASR');
     await sherpaOnnx.initASR(asrConfig);
+    console.log('[OnDeviceASR] ASR initialized successfully');
 
     // Subscribe to ASR events
     this.unsubscribePartial = sherpaOnnx.onPartialResult(({ text }) => {
       if (text.trim()) {
+        console.log('[OnDeviceASR] Partial result:', text);
         this.currentText = text;
         this.emitTranscription({
           text,
@@ -86,6 +95,7 @@ export class OnDeviceASR {
 
     this.unsubscribeFinal = sherpaOnnx.onFinalResult(async ({ text }) => {
       if (text.trim()) {
+        console.log('[OnDeviceASR] Final result:', text);
         const speaker = await this.identifyCurrentSpeaker();
         const entry: TranscriptEntry = {
           speaker,
@@ -111,6 +121,7 @@ export class OnDeviceASR {
     // Subscribe to VAD state changes
     this.unsubscribeVAD = vad.onVADStateChange(({ isSpeaking }: VADEvent) => {
       if (isSpeaking !== this.isSpeaking) {
+        console.log('[OnDeviceASR] VAD state changed:', isSpeaking ? 'SPEAKING' : 'SILENT');
         this.isSpeaking = isSpeaking;
         if (isSpeaking) {
           this.speechStartTime = Date.now();
@@ -125,14 +136,28 @@ export class OnDeviceASR {
   async start(): Promise<void> {
     if (this.isRunning) return;
 
+    console.log('[OnDeviceASR] Starting audio capture...');
     const hasPermission = await audioCapture.requestPermission();
     if (!hasPermission) {
       throw new Error('Microphone permission denied');
     }
 
+    // Subscribe to audio level updates
+    this.unsubscribeAudioLevel = audioCapture.onAudioLevel((event) => {
+      for (const cb of this.audioLevelCallbacks) {
+        cb(event.rms, event.peak);
+      }
+    });
+
+    let bufferCount = 0;
     // Subscribe to audio buffers
     this.unsubscribeAudio = audioCapture.onAudioBuffer(
       async (event: AudioBufferEvent) => {
+        bufferCount++;
+        if (bufferCount % 100 === 0) {
+          console.log(`[OnDeviceASR] Processed ${bufferCount} audio buffers`);
+        }
+
         // Feed audio to VAD
         const speaking = await vad.process(event.samples);
 
@@ -147,6 +172,7 @@ export class OnDeviceASR {
         // Check for endpoint (end of utterance)
         const isEndpoint = await sherpaOnnx.isEndpoint();
         if (isEndpoint) {
+          console.log('[OnDeviceASR] Endpoint detected, resetting ASR');
           // Force finalize
           await sherpaOnnx.resetASR();
         }
@@ -159,6 +185,7 @@ export class OnDeviceASR {
       bufferSize: AUDIO_CONFIG.bufferSize,
     });
 
+    console.log('[OnDeviceASR] Audio capture started');
     this.isRunning = true;
   }
 
@@ -168,6 +195,8 @@ export class OnDeviceASR {
     await audioCapture.stop();
     this.unsubscribeAudio?.();
     this.unsubscribeAudio = null;
+    this.unsubscribeAudioLevel?.();
+    this.unsubscribeAudioLevel = null;
     this.isRunning = false;
 
     return [...this.transcript];
@@ -247,6 +276,13 @@ export class OnDeviceASR {
     this.vadCallbacks.push(callback);
     return () => {
       this.vadCallbacks = this.vadCallbacks.filter(cb => cb !== callback);
+    };
+  }
+
+  onAudioLevel(callback: AudioLevelCallback): () => void {
+    this.audioLevelCallbacks.push(callback);
+    return () => {
+      this.audioLevelCallbacks = this.audioLevelCallbacks.filter(cb => cb !== callback);
     };
   }
 

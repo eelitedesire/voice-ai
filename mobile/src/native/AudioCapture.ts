@@ -52,9 +52,28 @@ class AudioCaptureManager {
   }
 
   async start(config: AudioCaptureConfig): Promise<void> {
+    console.log('[AudioCapture] start() called, current listeners:', {
+      bufferListeners: this.bufferListeners.length,
+      levelListeners: this.levelListeners.length,
+      hasSubscription: !!this.subscription,
+    });
+
+    // Clean up any existing subscriptions first
+    if (this.subscription) {
+      console.log('[AudioCapture] Cleaning up existing subscription');
+      this.subscription.remove();
+      this.subscription = null;
+    }
+    if (this.levelSubscription) {
+      console.log('[AudioCapture] Cleaning up existing level subscription');
+      this.levelSubscription.remove();
+      this.levelSubscription = null;
+    }
+
     this.subscription = this.emitter.addListener(
       'onAudioBuffer',
       (event: AudioBufferEvent) => {
+        console.log(`[AudioCapture] Native event received, dispatching to ${this.bufferListeners.length} listeners`);
         for (const listener of this.bufferListeners) {
           listener(event);
         }
@@ -71,6 +90,7 @@ class AudioCaptureManager {
     );
 
     await AudioCaptureModule.start(config);
+    console.log('[AudioCapture] Native module started successfully');
   }
 
   async stop(): Promise<void> {

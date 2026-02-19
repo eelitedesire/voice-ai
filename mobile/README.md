@@ -128,6 +128,39 @@ npx react-native run-ios
 npx react-native run-android
 ```
 
+## Downloading Models
+
+### In-App Download (Recommended)
+
+Models are downloaded at runtime through the Settings screen:
+
+1. **Launch the app** and navigate to the Settings tab
+2. **Select processing mode**: Choose "Hybrid" or "On-Device" mode
+3. **Tap "Download All Models"** to download:
+   - **ASR Models** (Zipformer encoder, decoder, joiner + tokens) - ~70MB
+   - **Speaker Model** (WeSpeaker ResNet34) - ~26MB
+   - **VAD Model** (Silero VAD) - ~2MB
+4. **Wait for download** to complete - Progress bars show individual model status
+5. **Models are ready** when all show "Ready" status
+
+Models are downloaded from:
+- **HuggingFace**: `csukuangfj/sherpa-onnx-streaming-zipformer-en-2023-06-26` (ASR)
+- **GitHub Releases**: `k2-fsa/sherpa-onnx/releases` (Speaker, VAD)
+
+### Model Storage
+
+- **Location**: `{DocumentDirectory}/models/`
+- **iOS**: `~/Library/Application Support/.../{AppID}/Documents/models/`
+- **Android**: `/data/data/{package}/files/models/`
+- **Total Size**: ~100MB after download
+
+### Managing Models
+
+In the Settings screen:
+- **Check Status**: Model status indicators show Ready/Missing/Downloading
+- **Delete Models**: Free up ~100MB storage space (can re-download anytime)
+- **Re-download**: Models are cached - re-downloading is fast if files still exist
+
 ## Key Dependencies
 
 - **react-native** 0.77 — Latest with new architecture support

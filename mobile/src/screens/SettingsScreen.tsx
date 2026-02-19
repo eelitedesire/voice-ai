@@ -2,7 +2,7 @@
  * SettingsScreen — App configuration: server URL, processing mode, model management.
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -12,19 +12,44 @@ import {
   Pressable,
   Switch,
   Alert,
+  ActivityIndicator,
 } from 'react-native';
+import RNFS from 'react-native-fs';
 import {
   getSettings,
   saveSettings,
   clearAllData,
 } from '../services/StorageService';
 import { useOnDeviceModels } from '../hooks/useOnDeviceModels';
+import { getModelDownloadService, DownloadProgress } from '../services/ModelDownloadService';
 import { ProcessingMode, AppSettings } from '../types';
 import { colors, typography, spacing, borderRadius, shadows } from '../theme';
 
 export function SettingsScreen() {
   const [settings, setSettings] = useState<AppSettings>(getSettings);
-  const { status: modelStatus, checkModels } = useOnDeviceModels('/var/mobile');
+  const documentDir = RNFS.DocumentDirectoryPath;
+  const { status: modelStatus, checkModels } = useOnDeviceModels(documentDir);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState<{
+    asr?: number;
+    speaker?: number;
+    vad?: number;
+  }>({});
+  const [modelsSize, setModelsSize] = useState<string>('0 MB');
+
+  useEffect(() => {
+    updateModelsSize();
+  }, [modelStatus]);
+
+  const updateModelsSize = async () => {
+    try {
+      const service = getModelDownloadService(documentDir);
+      const size = await service.getModelsSize();
+      setModelsSize(`${(size / 1024 / 1024).toFixed(1)} MB`);
+    } catch {
+      setModelsSize('0 MB');
+    }
+  };
 
   const updateSetting = <K extends keyof AppSettings>(
     key: K,
@@ -33,6 +58,63 @@ export function SettingsScreen() {
     const updated = { ...settings, [key]: value };
     setSettings(updated);
     saveSettings({ [key]: value });
+  };
+
+  const handleDownloadAll = async () => {
+    setDownloading(true);
+    setDownloadProgress({});
+
+    try {
+      const service = getModelDownloadService(documentDir);
+
+      const result = await service.downloadAllModels(
+        (model, progress: DownloadProgress) => {
+          setDownloadProgress((prev) => ({
+            ...prev,
+            [model]: progress.progress,
+          }));
+        },
+      );
+
+      if (result.errors.length > 0) {
+        Alert.alert('Download Incomplete', result.errors.join('\n'));
+      } else {
+        Alert.alert('Success', 'All models downloaded successfully!');
+      }
+
+      await checkModels();
+      await updateModelsSize();
+    } catch (error) {
+      Alert.alert('Error', error instanceof Error ? error.message : 'Download failed');
+    } finally {
+      setDownloading(false);
+      setDownloadProgress({});
+    }
+  };
+
+  const handleDeleteModels = () => {
+    Alert.alert(
+      'Delete Models',
+      'This will delete all downloaded models (~100MB). You can re-download them later.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const service = getModelDownloadService(documentDir);
+              await service.deleteAllModels();
+              await checkModels();
+              await updateModelsSize();
+              Alert.alert('Done', 'Models deleted successfully.');
+            } catch (error) {
+              Alert.alert('Error', 'Failed to delete models');
+            }
+          },
+        },
+      ],
+    );
   };
 
   const processingModes: { mode: ProcessingMode; label: string; desc: string }[] = [
@@ -114,15 +196,68 @@ export function SettingsScreen() {
       {/* On-Device Models */}
       {settings.processingMode !== 'server' && (
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>On-Device Models</Text>
-          <View style={styles.modelList}>
-            <ModelRow label="ASR (Zipformer)" status={modelStatus.asr} />
-            <ModelRow label="VAD (Silero v5)" status={modelStatus.vad} />
-            <ModelRow label="Speaker (WeSpeaker)" status={modelStatus.speaker} />
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>On-Device Models</Text>
+            <Text style={styles.modelsSizeText}>{modelsSize}</Text>
           </View>
-          <Pressable style={styles.downloadButton} onPress={checkModels}>
-            <Text style={styles.downloadButtonText}>Check Models</Text>
-          </Pressable>
+          <View style={styles.modelList}>
+            <ModelRow
+              label="ASR (Zipformer)"
+              status={modelStatus.asr}
+              progress={downloadProgress.asr}
+            />
+            <ModelRow
+              label="VAD (Silero v5)"
+              status={modelStatus.vad}
+              progress={downloadProgress.vad}
+            />
+            <ModelRow
+              label="Speaker (WeSpeaker)"
+              status={modelStatus.speaker}
+              progress={downloadProgress.speaker}
+            />
+          </View>
+
+          {downloading ? (
+            <View style={styles.downloadingContainer}>
+              <ActivityIndicator size="small" color={colors.primary} />
+              <Text style={styles.downloadingText}>Downloading models...</Text>
+            </View>
+          ) : (
+            <>
+              <Pressable
+                style={[
+                  styles.downloadButton,
+                  modelStatus.asr === 'ready' &&
+                    modelStatus.vad === 'ready' &&
+                    modelStatus.speaker === 'ready' &&
+                    styles.downloadButtonDisabled,
+                ]}
+                onPress={handleDownloadAll}
+                disabled={
+                  modelStatus.asr === 'ready' &&
+                  modelStatus.vad === 'ready' &&
+                  modelStatus.speaker === 'ready'
+                }
+              >
+                <Text style={styles.downloadButtonText}>
+                  {modelStatus.asr === 'ready' &&
+                  modelStatus.vad === 'ready' &&
+                  modelStatus.speaker === 'ready'
+                    ? 'All Models Downloaded'
+                    : 'Download All Models (~100MB)'}
+                </Text>
+              </Pressable>
+
+              {(modelStatus.asr === 'ready' ||
+                modelStatus.vad === 'ready' ||
+                modelStatus.speaker === 'ready') && (
+                <Pressable style={styles.deleteButton} onPress={handleDeleteModels}>
+                  <Text style={styles.deleteButtonText}>Delete Models</Text>
+                </Pressable>
+              )}
+            </>
+          )}
         </View>
       )}
 
@@ -182,11 +317,22 @@ export function SettingsScreen() {
   );
 }
 
-function ModelRow({ label, status }: { label: string; status: string }) {
+function ModelRow({
+  label,
+  status,
+  progress,
+}: {
+  label: string;
+  status: string;
+  progress?: number;
+}) {
+  const isDownloading = progress !== undefined && progress < 100;
+  const effectiveStatus = isDownloading ? 'downloading' : status;
+
   const color =
-    status === 'ready'
+    effectiveStatus === 'ready'
       ? colors.success
-      : status === 'downloading'
+      : effectiveStatus === 'downloading'
       ? colors.warning
       : colors.textMuted;
 
@@ -194,10 +340,25 @@ function ModelRow({ label, status }: { label: string; status: string }) {
     <View style={styles.modelRow}>
       <Text style={styles.modelLabel}>{label}</Text>
       <View style={styles.modelStatus}>
-        <View style={[styles.modelDot, { backgroundColor: color }]} />
-        <Text style={[styles.modelStatusText, { color }]}>
-          {status === 'ready' ? 'Ready' : status === 'downloading' ? 'Downloading' : 'Missing'}
-        </Text>
+        {isDownloading ? (
+          <>
+            <View style={styles.progressBarContainer}>
+              <View style={[styles.progressBar, { width: `${progress}%` }]} />
+            </View>
+            <Text style={[styles.modelStatusText, { color }]}>{Math.round(progress)}%</Text>
+          </>
+        ) : (
+          <>
+            <View style={[styles.modelDot, { backgroundColor: color }]} />
+            <Text style={[styles.modelStatusText, { color }]}>
+              {effectiveStatus === 'ready'
+                ? 'Ready'
+                : effectiveStatus === 'downloading'
+                ? 'Downloading'
+                : 'Missing'}
+            </Text>
+          </>
+        )}
       </View>
     </View>
   );
@@ -237,12 +398,21 @@ const styles = StyleSheet.create({
   section: {
     marginBottom: spacing.xl,
   },
+  sectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: spacing.md,
+  },
   sectionTitle: {
     ...typography.label,
     color: colors.textMuted,
     textTransform: 'uppercase',
     letterSpacing: 1,
-    marginBottom: spacing.md,
+  },
+  modelsSizeText: {
+    ...typography.caption,
+    color: colors.textMuted,
   },
   modeCard: {
     backgroundColor: colors.surface,
@@ -345,9 +515,51 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginTop: spacing.md,
   },
+  downloadButtonDisabled: {
+    backgroundColor: colors.surfaceLight,
+    opacity: 0.6,
+  },
   downloadButtonText: {
     ...typography.label,
     color: colors.textPrimary,
+  },
+  deleteButton: {
+    backgroundColor: 'transparent',
+    borderRadius: borderRadius.md,
+    padding: spacing.md,
+    alignItems: 'center',
+    marginTop: spacing.sm,
+    borderWidth: 1,
+    borderColor: colors.error + '40',
+  },
+  deleteButtonText: {
+    ...typography.label,
+    color: colors.error,
+  },
+  downloadingContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: spacing.md,
+    marginTop: spacing.md,
+    gap: spacing.sm,
+  },
+  downloadingText: {
+    ...typography.body,
+    color: colors.textSecondary,
+  },
+  progressBarContainer: {
+    width: 60,
+    height: 6,
+    backgroundColor: colors.border + '40',
+    borderRadius: 3,
+    overflow: 'hidden',
+    marginRight: spacing.xs,
+  },
+  progressBar: {
+    height: '100%',
+    backgroundColor: colors.warning,
+    borderRadius: 3,
   },
   settingRow: {
     flexDirection: 'row',

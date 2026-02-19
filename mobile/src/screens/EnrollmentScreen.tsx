@@ -5,7 +5,7 @@
  * on-device, and stores it locally for speaker identification.
  */
 
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import {
   View,
   Text,
@@ -14,12 +14,15 @@ import {
   Pressable,
   Alert,
   FlatList,
+  ActivityIndicator,
 } from 'react-native';
+import RNFS from 'react-native-fs';
 import { RecordButton } from '../components/RecordButton';
 import { AudioWaveform } from '../components/AudioWaveform';
 import { SpeakerBadge } from '../components/SpeakerBadge';
 import { SpeakerIdentificationService } from '../services/SpeakerIdentification';
 import { useAudioCapture } from '../hooks/useAudioCapture';
+import { useOnDeviceModels } from '../hooks/useOnDeviceModels';
 import { audioCapture, AudioBufferEvent } from '../native/AudioCapture';
 import { getSpeakerProfiles, saveSpeakerProfiles } from '../services/StorageService';
 import { SpeakerProfile } from '../types';
@@ -32,13 +35,41 @@ export function EnrollmentScreen() {
   const [isEnrolling, setIsEnrolling] = useState(false);
   const [enrollProgress, setEnrollProgress] = useState(0);
   const [profiles, setProfiles] = useState<SpeakerProfile[]>(getSpeakerProfiles);
+  const [isInitializing, setIsInitializing] = useState(false);
   const { audioLevel } = useAudioCapture();
 
+  const documentDir = RNFS.DocumentDirectoryPath;
+  const { status: modelStatus } = useOnDeviceModels(documentDir);
   const speakerService = useRef(new SpeakerIdentificationService());
   const audioBuffers = useRef<string[]>([]);
+  const serviceInitialized = useRef(false);
+  const isProcessingEnrollment = useRef(false); // Guard against duplicate calls
+  const audioUnsubscribe = useRef<(() => void) | null>(null);
 
   const MIN_DURATION = 5; // seconds
   const MAX_DURATION = 15; // seconds
+
+  // Initialize speaker service when model is ready
+  useEffect(() => {
+    const initService = async () => {
+      if (modelStatus.speaker === 'ready' && !serviceInitialized.current) {
+        setIsInitializing(true);
+        try {
+          await speakerService.current.initialize(documentDir);
+          serviceInitialized.current = true;
+        } catch (err) {
+          console.error('[Enrollment] Failed to initialize speaker service:', err);
+          Alert.alert(
+            'Initialization Error',
+            'Failed to load speaker model. Please try restarting the app.',
+          );
+        } finally {
+          setIsInitializing(false);
+        }
+      }
+    };
+    initService();
+  }, [modelStatus.speaker, documentDir]);
 
   const handleStartEnrollment = useCallback(async () => {
     if (!name.trim()) {
@@ -46,9 +77,18 @@ export function EnrollmentScreen() {
       return;
     }
 
+    if (!serviceInitialized.current) {
+      Alert.alert(
+        'Model Not Ready',
+        'Speaker model is not loaded. Please download models from Settings first.',
+      );
+      return;
+    }
+
     setIsEnrolling(true);
     setEnrollProgress(0);
     audioBuffers.current = [];
+    isProcessingEnrollment.current = false;
 
     // Collect audio buffers
     const unsub = audioCapture.onAudioBuffer((event: AudioBufferEvent) => {
@@ -58,10 +98,12 @@ export function EnrollmentScreen() {
       setEnrollProgress(Math.min(seconds / MIN_DURATION, 1));
 
       // Auto-stop at max duration
-      if (seconds >= MAX_DURATION) {
+      if (seconds >= MAX_DURATION && !isProcessingEnrollment.current) {
         handleStopEnrollment();
       }
     });
+
+    audioUnsubscribe.current = unsub;
 
     try {
       await audioCapture.start({
@@ -73,10 +115,23 @@ export function EnrollmentScreen() {
       Alert.alert('Error', 'Failed to start recording. Check microphone permissions.');
       setIsEnrolling(false);
       unsub();
+      audioUnsubscribe.current = null;
     }
   }, [name]);
 
   const handleStopEnrollment = useCallback(async () => {
+    // Prevent duplicate calls
+    if (isProcessingEnrollment.current) {
+      return;
+    }
+    isProcessingEnrollment.current = true;
+
+    // Unsubscribe from audio events first
+    if (audioUnsubscribe.current) {
+      audioUnsubscribe.current();
+      audioUnsubscribe.current = null;
+    }
+
     await audioCapture.stop();
     setIsEnrolling(false);
 
@@ -88,14 +143,45 @@ export function EnrollmentScreen() {
         'Too Short',
         `Please record at least ${MIN_DURATION} seconds of speech.`,
       );
+      isProcessingEnrollment.current = false;
       return;
     }
 
     try {
-      // Concatenate all audio buffers for enrollment
-      const combinedBase64 = audioBuffers.current.join('');
+      // Decode and concatenate all audio buffers
+      // Each buffer is base64-encoded Float32Array - we need to decode, concatenate, then re-encode
+      const decodedBuffers: Float32Array[] = audioBuffers.current.map((base64) => {
+        const binary = globalThis.atob(base64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        return new Float32Array(bytes.buffer);
+      });
 
-      await speakerService.current.initialize('/var/mobile');
+      // Concatenate all Float32Arrays
+      const totalLength = decodedBuffers.reduce((sum, arr) => sum + arr.length, 0);
+      const combinedAudio = new Float32Array(totalLength);
+      let offset = 0;
+      for (const buffer of decodedBuffers) {
+        combinedAudio.set(buffer, offset);
+        offset += buffer.length;
+      }
+
+      // Re-encode to base64 - process in chunks to avoid stack overflow
+      const combinedBytes = new Uint8Array(combinedAudio.buffer);
+      const chunkSize = 8192; // Process 8KB at a time
+      let binaryString = '';
+
+      for (let i = 0; i < combinedBytes.length; i += chunkSize) {
+        const chunk = combinedBytes.slice(i, i + chunkSize);
+        binaryString += String.fromCharCode.apply(null, Array.from(chunk));
+      }
+
+      const combinedBase64 = globalThis.btoa(binaryString);
+
+      console.log(`[Enrollment] Combined ${decodedBuffers.length} buffers, total samples: ${totalLength}`);
+
       const profile = await speakerService.current.enrollSpeaker(
         name.trim(),
         role,
@@ -106,7 +192,13 @@ export function EnrollmentScreen() {
       setName('');
       Alert.alert('Enrolled', `${profile.name} has been enrolled successfully.`);
     } catch (err) {
-      Alert.alert('Error', 'Failed to process voice sample. Please try again.');
+      console.error('[Enrollment] Error:', err);
+      Alert.alert(
+        'Error',
+        err instanceof Error ? err.message : 'Failed to process voice sample. Please try again.',
+      );
+    } finally {
+      isProcessingEnrollment.current = false;
     }
   }, [name, role]);
 
@@ -127,6 +219,23 @@ export function EnrollmentScreen() {
 
   return (
     <View style={styles.container}>
+      {/* Model status warning */}
+      {modelStatus.speaker !== 'ready' && (
+        <View style={styles.warningBanner}>
+          <Text style={styles.warningText}>
+            ⚠️ Speaker model not downloaded. Go to Settings to download models.
+          </Text>
+        </View>
+      )}
+
+      {/* Loading indicator */}
+      {isInitializing && (
+        <View style={styles.loadingBanner}>
+          <ActivityIndicator size="small" color={colors.primary} />
+          <Text style={styles.loadingText}>Loading speaker model...</Text>
+        </View>
+      )}
+
       {/* Enrollment form */}
       <View style={styles.form}>
         <Text style={styles.heading}>Enroll New Speaker</Text>
@@ -209,13 +318,18 @@ export function EnrollmentScreen() {
           data={profiles}
           keyExtractor={item => item.id}
           renderItem={({ item }) => (
-            <Pressable
-              style={styles.profileRow}
-              onLongPress={() => handleDeleteProfile(item.id)}
-            >
-              <SpeakerBadge name={item.name} isActive />
-              <Text style={styles.profileRole}>{item.role}</Text>
-            </Pressable>
+            <View style={styles.profileRow}>
+              <View style={styles.profileInfo}>
+                <SpeakerBadge name={item.name} isActive />
+                <Text style={styles.profileRole}>{item.role}</Text>
+              </View>
+              <Pressable
+                style={styles.deleteIconButton}
+                onPress={() => handleDeleteProfile(item.id)}
+              >
+                <Text style={styles.deleteIcon}>✕</Text>
+              </Pressable>
+            </View>
           )}
           ListEmptyComponent={
             <Text style={styles.emptyText}>No speakers enrolled yet</Text>
@@ -325,15 +439,62 @@ const styles = StyleSheet.create({
     padding: spacing.md,
     marginBottom: spacing.sm,
   },
+  profileInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    flex: 1,
+  },
   profileRole: {
     ...typography.caption,
     color: colors.textMuted,
     textTransform: 'capitalize',
+  },
+  deleteIconButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: colors.error + '20',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: spacing.sm,
+  },
+  deleteIcon: {
+    ...typography.body,
+    color: colors.error,
+    fontSize: 18,
+    fontWeight: '600',
   },
   emptyText: {
     ...typography.body,
     color: colors.textMuted,
     textAlign: 'center',
     paddingVertical: spacing.lg,
+  },
+  warningBanner: {
+    backgroundColor: colors.warning + '20',
+    borderLeftWidth: 4,
+    borderLeftColor: colors.warning,
+    padding: spacing.md,
+    margin: spacing.md,
+    borderRadius: borderRadius.sm,
+  },
+  warningText: {
+    ...typography.bodySmall,
+    color: colors.warning,
+  },
+  loadingBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: spacing.md,
+    gap: spacing.sm,
+    backgroundColor: colors.surface,
+    borderRadius: borderRadius.md,
+    margin: spacing.md,
+  },
+  loadingText: {
+    ...typography.bodySmall,
+    color: colors.textSecondary,
   },
 });
