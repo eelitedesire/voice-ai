@@ -78,6 +78,14 @@ export class OnDeviceASR {
     await sherpaOnnx.initASR(asrConfig);
     console.log('[OnDeviceASR] ASR initialized successfully');
 
+    // Initialize speaker embedding model for speaker identification
+    await sherpaOnnx.initSpeakerModel({
+      modelPath: `${documentDir}/${MODEL_PATHS.speakerEncoder}`,
+      numThreads: 2,
+      sampleRate: AUDIO_CONFIG.sampleRate,
+    });
+    console.log('[OnDeviceASR] Speaker model initialized successfully');
+
     // Subscribe to ASR events
     this.unsubscribePartial = sherpaOnnx.onPartialResult(({ text }) => {
       if (text.trim()) {
@@ -215,6 +223,7 @@ export class OnDeviceASR {
     this.unsubscribeFinal?.();
     await vad.release();
     await sherpaOnnx.releaseASR();
+    await sherpaOnnx.releaseSpeakerModel();
   }
 
   // --- Speaker identification (on-device) ---
