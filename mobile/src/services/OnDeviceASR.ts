@@ -225,9 +225,8 @@ export class OnDeviceASR {
 
   private async identifyCurrentSpeaker(): Promise<string> {
     if (this.speakerReferences.length === 0) {
-      // No speaker references enrolled — use a generic label so
-      // the transcript is readable rather than showing "Unknown".
-      return 'Speaker 1';
+      // No enrolled speakers — no label
+      return '';
     }
 
     // Extract embedding from accumulated speech samples
@@ -236,7 +235,7 @@ export class OnDeviceASR {
       const sampleBuffer = this.currentSpeechSamples;
       if (sampleBuffer.length < AUDIO_CONFIG.sampleRate) {
         // Less than 1 second — not enough for reliable speaker ID
-        return 'Unknown';
+        return '';
       }
 
       // Encode samples as base64 for native bridge
@@ -249,23 +248,23 @@ export class OnDeviceASR {
       const embedding = await sherpaOnnx.extractEmbedding(base64);
       return this.matchSpeaker(embedding);
     } catch {
-      return 'Unknown';
+      return '';
     }
   }
 
   private matchSpeaker(embedding: number[]): string {
-    let bestMatch = 'Unknown';
-    let bestScore = -1;
-    const threshold = 0.35;
+    let bestMatch = '';
+    let bestScore = -Infinity;
 
     for (const ref of this.speakerReferences) {
       const score = cosineSimilarity(embedding, ref.embedding);
-      if (score > threshold && score > bestScore) {
+      if (score > bestScore) {
         bestScore = score;
         bestMatch = ref.name;
       }
     }
 
+    // Always returns the closest enrolled speaker (speakerReferences.length > 0 guaranteed by caller)
     return bestMatch;
   }
 
