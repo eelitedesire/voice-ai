@@ -7,7 +7,7 @@
 
 @interface RCT_EXTERN_MODULE(VADModule, RCTEventEmitter)
 
-RCT_EXTERN_METHOD(init:
+RCT_EXTERN_METHOD(initVAD:
                   (NSDictionary *)config
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)

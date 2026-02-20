@@ -125,6 +125,11 @@ export class OnDeviceASR {
         this.isSpeaking = isSpeaking;
         if (isSpeaking) {
           this.speechStartTime = Date.now();
+        } else {
+          // Speech ended — tell the recognizer to finalize the current utterance.
+          // SFSpeechRecognizer calls endAudio() inside resetASR(), which triggers
+          // the recognition task to complete and emit onFinalResult.
+          sherpaOnnx.resetASR().catch(() => {});
         }
         for (const cb of this.vadCallbacks) {
           cb(isSpeaking);
@@ -158,23 +163,24 @@ export class OnDeviceASR {
           console.log(`[OnDeviceASR] Processed ${bufferCount} audio buffers`);
         }
 
-        // Feed audio to VAD
+        // Feed audio to VAD to track speech/silence state
         const speaking = await vad.process(event.samples);
 
-        // Accumulate samples for speaker ID while speaking
-        if (speaking) {
-          const decoded = audioCapture.constructor.prototype.constructor === undefined
-            ? [] : []; // placeholder — actual decoding happens in native layer
-          // Feed audio to ASR only when speech is detected
-          await sherpaOnnx.feedAudio(event.samples);
-        }
+        // Always feed audio to ASR regardless of VAD state so utterance
+        // beginnings are not clipped (SFSpeechRecognizer handles silence itself).
+        await sherpaOnnx.feedAudio(event.samples);
 
-        // Check for endpoint (end of utterance)
-        const isEndpoint = await sherpaOnnx.isEndpoint();
-        if (isEndpoint) {
-          console.log('[OnDeviceASR] Endpoint detected, resetting ASR');
-          // Force finalize
-          await sherpaOnnx.resetASR();
+        // Accumulate decoded samples for speaker ID while speaking
+        if (speaking) {
+          const binary = globalThis.atob(event.samples);
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) {
+            bytes[i] = binary.charCodeAt(i);
+          }
+          const floatSamples = new Float32Array(bytes.buffer);
+          for (let i = 0; i < floatSamples.length; i++) {
+            this.currentSpeechSamples.push(floatSamples[i]);
+          }
         }
       },
     );
@@ -219,7 +225,9 @@ export class OnDeviceASR {
 
   private async identifyCurrentSpeaker(): Promise<string> {
     if (this.speakerReferences.length === 0) {
-      return 'Unknown';
+      // No speaker references enrolled — use a generic label so
+      // the transcript is readable rather than showing "Unknown".
+      return 'Speaker 1';
     }
 
     // Extract embedding from accumulated speech samples

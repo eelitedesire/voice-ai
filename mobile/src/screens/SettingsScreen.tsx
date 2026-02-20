@@ -13,8 +13,8 @@ import {
   Switch,
   Alert,
   ActivityIndicator,
+  NativeModules,
 } from 'react-native';
-import RNFS from 'react-native-fs';
 import {
   getSettings,
   saveSettings,
@@ -27,7 +27,9 @@ import { colors, typography, spacing, borderRadius, shadows } from '../theme';
 
 export function SettingsScreen() {
   const [settings, setSettings] = useState<AppSettings>(getSettings);
-  const documentDir = RNFS.DocumentDirectoryPath;
+  const documentDir =
+    (NativeModules.RNFSManager as { DocumentDirectoryPath?: string })
+      ?.DocumentDirectoryPath ?? '';
   const { status: modelStatus, checkModels } = useOnDeviceModels(documentDir);
   const [downloading, setDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState<{

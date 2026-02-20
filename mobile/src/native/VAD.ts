@@ -28,15 +28,15 @@ export interface VADEvent {
 }
 
 class VADManager {
-  private emitter: NativeEventEmitter;
+  private emitter: NativeEventEmitter | null;
   private subscription: ReturnType<NativeEventEmitter['addListener']> | null = null;
 
   constructor() {
-    this.emitter = new NativeEventEmitter(VADModule);
+    this.emitter = VADModule ? new NativeEventEmitter(VADModule) : null;
   }
 
   async init(config: VADConfig): Promise<void> {
-    return VADModule.init(config);
+    return VADModule.initVAD(config);
   }
 
   async release(): Promise<void> {
@@ -60,7 +60,7 @@ class VADManager {
   }
 
   onVADStateChange(callback: (event: VADEvent) => void): () => void {
-    this.subscription = this.emitter.addListener('onVADStateChange', callback);
+    this.subscription = this.emitter?.addListener('onVADStateChange', callback) ?? null;
     return () => this.subscription?.remove();
   }
 }

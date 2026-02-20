@@ -12,8 +12,8 @@ import {
   StyleSheet,
   Pressable,
   Alert,
+  NativeModules,
 } from 'react-native';
-import RNFS from 'react-native-fs';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RecordButton } from '../components/RecordButton';
@@ -35,7 +35,12 @@ export function SessionScreen() {
   const settings = getSettings();
   const speakers = getSpeakerProfiles();
 
-  const documentDir = RNFS.DocumentDirectoryPath;
+  // Access document directory directly from the native module constants to avoid
+  // importing react-native-fs at module level (it creates a NativeEventEmitter
+  // with RNFSManager which throws under New Architecture when the module is null).
+  const documentDir =
+    (NativeModules.RNFSManager as { DocumentDirectoryPath?: string })
+      ?.DocumentDirectoryPath ?? '';
   const { status: modelStatus } = useOnDeviceModels(documentDir);
   const {
     isActive,

@@ -15,8 +15,8 @@ import {
   Alert,
   FlatList,
   ActivityIndicator,
+  NativeModules,
 } from 'react-native';
-import RNFS from 'react-native-fs';
 import { RecordButton } from '../components/RecordButton';
 import { AudioWaveform } from '../components/AudioWaveform';
 import { SpeakerBadge } from '../components/SpeakerBadge';
@@ -38,7 +38,9 @@ export function EnrollmentScreen() {
   const [isInitializing, setIsInitializing] = useState(false);
   const { audioLevel } = useAudioCapture();
 
-  const documentDir = RNFS.DocumentDirectoryPath;
+  const documentDir =
+    (NativeModules.RNFSManager as { DocumentDirectoryPath?: string })
+      ?.DocumentDirectoryPath ?? '';
   const { status: modelStatus } = useOnDeviceModels(documentDir);
   const speakerService = useRef(new SpeakerIdentificationService());
   const audioBuffers = useRef<string[]>([]);

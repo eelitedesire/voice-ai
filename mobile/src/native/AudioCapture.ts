@@ -37,14 +37,14 @@ type AudioCaptureListener = (event: AudioBufferEvent) => void;
 type AudioLevelListener = (event: AudioLevelEvent) => void;
 
 class AudioCaptureManager {
-  private emitter: NativeEventEmitter;
+  private emitter: NativeEventEmitter | null;
   private bufferListeners: AudioCaptureListener[] = [];
   private levelListeners: AudioLevelListener[] = [];
   private subscription: ReturnType<NativeEventEmitter['addListener']> | null = null;
   private levelSubscription: ReturnType<NativeEventEmitter['addListener']> | null = null;
 
   constructor() {
-    this.emitter = new NativeEventEmitter(AudioCaptureModule);
+    this.emitter = AudioCaptureModule ? new NativeEventEmitter(AudioCaptureModule) : null;
   }
 
   async requestPermission(): Promise<boolean> {
@@ -70,7 +70,7 @@ class AudioCaptureManager {
       this.levelSubscription = null;
     }
 
-    this.subscription = this.emitter.addListener(
+    this.subscription = this.emitter?.addListener(
       'onAudioBuffer',
       (event: AudioBufferEvent) => {
         console.log(`[AudioCapture] Native event received, dispatching to ${this.bufferListeners.length} listeners`);
@@ -78,16 +78,16 @@ class AudioCaptureManager {
           listener(event);
         }
       },
-    );
+    ) ?? null;
 
-    this.levelSubscription = this.emitter.addListener(
+    this.levelSubscription = this.emitter?.addListener(
       'onAudioLevel',
       (event: AudioLevelEvent) => {
         for (const listener of this.levelListeners) {
           listener(event);
         }
       },
-    );
+    ) ?? null;
 
     await AudioCaptureModule.start(config);
     console.log('[AudioCapture] Native module started successfully');

@@ -47,12 +47,12 @@ export interface FinalResultEvent {
 }
 
 class SherpaOnnxManager {
-  private emitter: NativeEventEmitter;
+  private emitter: NativeEventEmitter | null;
   private partialSub: ReturnType<NativeEventEmitter['addListener']> | null = null;
   private finalSub: ReturnType<NativeEventEmitter['addListener']> | null = null;
 
   constructor() {
-    this.emitter = new NativeEventEmitter(SherpaOnnxModule);
+    this.emitter = SherpaOnnxModule ? new NativeEventEmitter(SherpaOnnxModule) : null;
   }
 
   // --- ASR ---
@@ -91,12 +91,12 @@ class SherpaOnnxManager {
   }
 
   onPartialResult(callback: (event: PartialResultEvent) => void): () => void {
-    this.partialSub = this.emitter.addListener('onPartialResult', callback);
+    this.partialSub = this.emitter?.addListener('onPartialResult', callback) ?? null;
     return () => this.partialSub?.remove();
   }
 
   onFinalResult(callback: (event: FinalResultEvent) => void): () => void {
-    this.finalSub = this.emitter.addListener('onFinalResult', callback);
+    this.finalSub = this.emitter?.addListener('onFinalResult', callback) ?? null;
     return () => this.finalSub?.remove();
   }
 
