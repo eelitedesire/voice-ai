@@ -190,12 +190,13 @@ class SherpaOnnxModule: RCTEventEmitter {
   ) {
     asrQueue.async { [weak self] in
       guard let self = self else { resolve(nil); return }
-      // endAudio() signals to the recognizer that no more audio is coming,
-      // causing it to finalize and fire the completion with isFinal = true.
+      // endAudio() signals the recognizer that no more audio is coming.
+      // The recognition task will then finalize and call the completion
+      // handler with isFinal = true, which emits onFinalResult.
+      // Do NOT cancel the task here — cancellation delivers an error
+      // callback instead of isFinal = true, so the transcript is lost.
       self.recognitionRequest?.endAudio()
-      self.recognitionRequest = nil
-      self.recognitionTask?.cancel()
-      self.recognitionTask = nil
+      self.recognitionRequest = nil  // Stops new audio from being appended
       resolve(nil)
     }
   }

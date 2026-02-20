@@ -225,7 +225,9 @@ export class OnDeviceASR {
 
   private async identifyCurrentSpeaker(): Promise<string> {
     if (this.speakerReferences.length === 0) {
-      return 'Unknown';
+      // No speaker references enrolled — use a generic label so
+      // the transcript is readable rather than showing "Unknown".
+      return 'Speaker 1';
     }
 
     // Extract embedding from accumulated speech samples
