@@ -57,6 +57,11 @@ export default function SessionRecorder({
 
       case 'vad':
         setIsSpeaking(event.isSpeaking);
+        // Clear the partial transcript when speech ends so "transcribing..." dismisses
+        // immediately even before the final transcript_final event arrives.
+        if (!event.isSpeaking) {
+          onPartialTranscript?.('');
+        }
         onVadStatus?.(event.isSpeaking);
         break;
 
