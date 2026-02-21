@@ -1,53 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { generateObject } from 'ai';
-import { createGroq } from '@ai-sdk/groq';
-import { z } from 'zod';
-import { addFacts, getMemoriesForSpeaker } from '@/lib/memory-store';
-import { TranscriptEntry } from '@/types';
+import { ExtractMemoriesUseCase } from '@/lib/application/use-cases/ExtractMemoriesUseCase';
+import { memoryRepository } from '@/lib/infrastructure/persistence/JsonMemoryRepository';
+import type { TranscriptEntry } from '@/lib/domain/entities';
 
-const groq = createGroq({
-  apiKey: process.env.GROQ_API_KEY,
-});
-
-const memoryExtractionSchema = z.object({
-  speakers: z.array(
-    z.object({
-      name: z.string().describe('The speaker name exactly as it appears in the transcript'),
-      facts: z.array(
-        z.object({
-          content: z.string().describe('A concise factual statement about this person'),
-          category: z.enum([
-            'personal',
-            'relationship',
-            'emotional',
-            'goal',
-            'preference',
-            'history',
-            'other',
-          ]).describe('Category of the fact'),
-        })
-      ).describe('New facts learned about this person from the conversation'),
-    })
-  ),
-});
-
-const EXTRACTION_PROMPT = `You are a memory extraction system for a therapy platform. Your job is to identify and extract important factual information about each person mentioned in the conversation.
-
-Extract facts that would be valuable to remember across therapy sessions, such as:
-- Personal details (name, age, occupation, family members, living situation)
-- Relationship dynamics (who they are to each other, conflicts, strengths)
-- Emotional patterns (recurring feelings, triggers, coping mechanisms)
-- Goals (therapy goals, life goals, things they want to change)
-- Preferences (communication style, things that help/harm)
-- History (past events, trauma, milestones, previous therapy)
-- Other relevant information
-
-Guidelines:
-- Each fact should be a single, concise sentence
-- Only extract genuinely new or important information
-- Do not extract trivial small talk
-- Do not extract the therapist's own statements as facts about them
-- Focus on information that would help a therapist in future sessions`;
+const extractMemories = new ExtractMemoriesUseCase(memoryRepository);
 
 export async function POST(request: NextRequest) {
   try {
@@ -60,15 +16,17 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Build the conversation text to analyze
-    let conversationText = '';
+    // Determine the set of transcript entries and speaker names to process
+    let entries: TranscriptEntry[];
+    let speakerNames: string[];
 
     if (transcript && Array.isArray(transcript) && transcript.length > 0) {
-      conversationText = transcript
-        .map((entry: TranscriptEntry) => `[${entry.speaker}]: ${entry.text}`)
-        .join('\n');
+      entries = transcript as TranscriptEntry[];
+      speakerNames = speakerHint ?? [...new Set(entries.map((e: TranscriptEntry) => e.speaker))];
     } else if (text && typeof text === 'string') {
-      conversationText = text;
+      // Wrap free-form text as a single unnamed entry so extractFromTranscript can process it
+      entries = [{ speaker: 'Unknown', text, timestamp: Date.now() }];
+      speakerNames = speakerHint ?? ['Unknown'];
     } else {
       return NextResponse.json(
         { error: 'Either transcript or text is required' },
@@ -76,46 +34,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Build context about existing memories so the LLM avoids extracting duplicates
-    let existingContext = '';
-    if (speakerHint && Array.isArray(speakerHint)) {
-      const parts: string[] = [];
-      for (const name of speakerHint) {
-        const mem = getMemoriesForSpeaker(name);
-        if (mem && mem.facts.length > 0) {
-          const existing = mem.facts.map(f => `- ${f.content}`).join('\n');
-          parts.push(`Already known about ${name}:\n${existing}`);
-        }
-      }
-      if (parts.length > 0) {
-        existingContext = `\n\nThe following facts are already stored. Do NOT re-extract these — only extract genuinely new information:\n${parts.join('\n\n')}`;
-      }
-    }
+    await extractMemories.extractFromTranscript(entries, speakerNames);
 
-    const { object } = await generateObject({
-      model: groq('meta-llama/llama-4-scout-17b-16e-instruct'),
-      schema: memoryExtractionSchema,
-      system: EXTRACTION_PROMPT + existingContext,
-      prompt: `Extract valuable facts about each person from this conversation:\n\n${conversationText}`,
-    });
-
-    // Store extracted facts
-    let totalAdded = 0;
-    const results: Record<string, number> = {};
-
-    for (const speaker of object.speakers) {
-      if (speaker.facts.length > 0) {
-        const added = addFacts(speaker.name, speaker.facts);
-        totalAdded += added.length;
-        results[speaker.name] = added.length;
-      }
-    }
-
-    return NextResponse.json({
-      extracted: object.speakers,
-      stored: results,
-      totalAdded,
-    });
+    return NextResponse.json({ success: true });
   } catch (error) {
     console.error('Memory extraction error:', error);
     return NextResponse.json(
