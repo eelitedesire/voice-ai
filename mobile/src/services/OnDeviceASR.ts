@@ -133,6 +133,9 @@ export class OnDeviceASR {
         this.isSpeaking = isSpeaking;
         if (isSpeaking) {
           this.speechStartTime = Date.now();
+          // Clear samples from any previous utterance so each speech segment
+          // gets its own clean buffer for speaker identification.
+          this.currentSpeechSamples = [];
         } else {
           // Speech ended — tell the recognizer to finalize the current utterance.
           // SFSpeechRecognizer calls endAudio() inside resetASR(), which triggers
@@ -178,8 +181,11 @@ export class OnDeviceASR {
         // beginnings are not clipped (SFSpeechRecognizer handles silence itself).
         await sherpaOnnx.feedAudio(event.samples);
 
-        // Accumulate decoded samples for speaker ID while speaking
-        if (speaking) {
+        // Accumulate decoded samples for speaker ID during the confirmed
+        // speech window. Use the latched isSpeaking state (set by VAD state
+        // change event) rather than the per-frame vad.process() return value,
+        // which can miss the first ~250ms while VAD confirms speech start.
+        if (this.isSpeaking) {
           const binary = globalThis.atob(event.samples);
           const bytes = new Uint8Array(binary.length);
           for (let i = 0; i < binary.length; i++) {
@@ -242,8 +248,8 @@ export class OnDeviceASR {
     // The native module handles the base64 encoding
     try {
       const sampleBuffer = this.currentSpeechSamples;
-      if (sampleBuffer.length < AUDIO_CONFIG.sampleRate) {
-        // Less than 1 second — not enough for reliable speaker ID
+      if (sampleBuffer.length < AUDIO_CONFIG.sampleRate * 0.5) {
+        // Less than 0.5 seconds — not enough for reliable speaker ID
         return '';
       }
 
