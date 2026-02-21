@@ -78,6 +78,14 @@ export class OnDeviceASR {
     await sherpaOnnx.initASR(asrConfig);
     console.log('[OnDeviceASR] ASR initialized successfully');
 
+    // Initialize speaker embedding model for speaker identification
+    await sherpaOnnx.initSpeakerModel({
+      modelPath: `${documentDir}/${MODEL_PATHS.speakerEncoder}`,
+      numThreads: 2,
+      sampleRate: AUDIO_CONFIG.sampleRate,
+    });
+    console.log('[OnDeviceASR] Speaker model initialized successfully');
+
     // Subscribe to ASR events
     this.unsubscribePartial = sherpaOnnx.onPartialResult(({ text }) => {
       if (text.trim()) {
@@ -125,6 +133,9 @@ export class OnDeviceASR {
         this.isSpeaking = isSpeaking;
         if (isSpeaking) {
           this.speechStartTime = Date.now();
+          // Clear samples from any previous utterance so each speech segment
+          // gets its own clean buffer for speaker identification.
+          this.currentSpeechSamples = [];
         } else {
           // Speech ended — tell the recognizer to finalize the current utterance.
           // SFSpeechRecognizer calls endAudio() inside resetASR(), which triggers
@@ -170,8 +181,11 @@ export class OnDeviceASR {
         // beginnings are not clipped (SFSpeechRecognizer handles silence itself).
         await sherpaOnnx.feedAudio(event.samples);
 
-        // Accumulate decoded samples for speaker ID while speaking
-        if (speaking) {
+        // Accumulate decoded samples for speaker ID during the confirmed
+        // speech window. Use the latched isSpeaking state (set by VAD state
+        // change event) rather than the per-frame vad.process() return value,
+        // which can miss the first ~250ms while VAD confirms speech start.
+        if (this.isSpeaking) {
           const binary = globalThis.atob(event.samples);
           const bytes = new Uint8Array(binary.length);
           for (let i = 0; i < binary.length; i++) {
@@ -215,6 +229,7 @@ export class OnDeviceASR {
     this.unsubscribeFinal?.();
     await vad.release();
     await sherpaOnnx.releaseASR();
+    await sherpaOnnx.releaseSpeakerModel();
   }
 
   // --- Speaker identification (on-device) ---
@@ -225,18 +240,17 @@ export class OnDeviceASR {
 
   private async identifyCurrentSpeaker(): Promise<string> {
     if (this.speakerReferences.length === 0) {
-      // No speaker references enrolled — use a generic label so
-      // the transcript is readable rather than showing "Unknown".
-      return 'Speaker 1';
+      // No enrolled speakers — no label
+      return '';
     }
 
     // Extract embedding from accumulated speech samples
     // The native module handles the base64 encoding
     try {
       const sampleBuffer = this.currentSpeechSamples;
-      if (sampleBuffer.length < AUDIO_CONFIG.sampleRate) {
-        // Less than 1 second — not enough for reliable speaker ID
-        return 'Unknown';
+      if (sampleBuffer.length < AUDIO_CONFIG.sampleRate * 0.5) {
+        // Less than 0.5 seconds — not enough for reliable speaker ID
+        return '';
       }
 
       // Encode samples as base64 for native bridge
@@ -249,23 +263,23 @@ export class OnDeviceASR {
       const embedding = await sherpaOnnx.extractEmbedding(base64);
       return this.matchSpeaker(embedding);
     } catch {
-      return 'Unknown';
+      return '';
     }
   }
 
   private matchSpeaker(embedding: number[]): string {
-    let bestMatch = 'Unknown';
-    let bestScore = -1;
-    const threshold = 0.35;
+    let bestMatch = '';
+    let bestScore = -Infinity;
 
     for (const ref of this.speakerReferences) {
       const score = cosineSimilarity(embedding, ref.embedding);
-      if (score > threshold && score > bestScore) {
+      if (score > bestScore) {
         bestScore = score;
         bestMatch = ref.name;
       }
     }
 
+    // Always returns the closest enrolled speaker (speakerReferences.length > 0 guaranteed by caller)
     return bestMatch;
   }
 

@@ -248,7 +248,7 @@ export class StreamingTranscriber extends EventEmitter {
     const text = (result.text || '').trim();
 
     // Identify speaker from accumulated speech
-    let speaker = 'Unknown';
+    let speaker = '';
     if (this.speechSamplesBuffer.length >= this.sampleRate * 0.5) {
       speaker = this.identifySpeakerSync(new Float32Array(this.speechSamplesBuffer));
     }
@@ -277,7 +277,7 @@ export class StreamingTranscriber extends EventEmitter {
    */
   private identifySpeakerSync(samples: Float32Array): string {
     if (!this.speakerEmbedding || this.speakerManager.getNumSpeakers() === 0) {
-      return 'Unknown';
+      return '';
     }
 
     try {
@@ -285,28 +285,20 @@ export class StreamingTranscriber extends EventEmitter {
       stream.acceptWaveform({ sampleRate: this.sampleRate, samples });
       stream.inputFinished();
 
-      if (!this.speakerEmbedding.isReady(stream)) return 'Unknown';
+      if (!this.speakerEmbedding.isReady(stream)) return '';
 
       const embedding = this.speakerEmbedding.compute(stream);
-      if (!embedding || embedding.length === 0) return 'Unknown';
+      if (!embedding || embedding.length === 0) return '';
 
-      // Search with threshold
+      // Always pick the closest enrolled speaker (threshold -1 accepts any cosine similarity)
       const name = this.speakerManager.search({
         v: new Float32Array(embedding),
-        threshold: 0.35,
+        threshold: -1,
       });
 
-      if (name && name !== '') return name;
-
-      // Fallback loose match
-      const guess = this.speakerManager.search({
-        v: new Float32Array(embedding),
-        threshold: 0.1,
-      });
-
-      return guess || 'Unknown';
+      return name || '';
     } catch {
-      return 'Unknown';
+      return '';
     }
   }
 
@@ -349,7 +341,7 @@ export class StreamingTranscriber extends EventEmitter {
       const text = (result.text || '').trim();
 
       if (text) {
-        let speaker = 'Unknown';
+        let speaker = '';
         if (this.speechSamplesBuffer.length >= this.sampleRate * 0.5) {
           speaker = this.identifySpeakerSync(new Float32Array(this.speechSamplesBuffer));
         }
@@ -404,6 +396,9 @@ export class VADSegmentedTranscriber extends EventEmitter {
   private lastPartialText = '';
   private pendingSamples = 0;
   private readonly DECODE_EVERY_N_SAMPLES = 1600;
+
+  // VAD state for client signalling
+  private isSpeechActive = false;
 
   constructor(modelPath?: string) {
     super();
@@ -527,9 +522,46 @@ export class VADSegmentedTranscriber extends EventEmitter {
       const text = (result.text || '').trim();
       if (text && text !== this.lastPartialText) {
         this.lastPartialText = text;
+        // Signal speech start on first recognized text
+        if (!this.isSpeechActive) {
+          this.isSpeechActive = true;
+          this.emit('event', {
+            type: 'vad',
+            isSpeaking: true,
+            timestamp: Date.now(),
+          } as StreamingEvent);
+        }
         this.emit('event', {
           type: 'partial',
           text,
+          timestamp: Date.now(),
+        } as StreamingEvent);
+      }
+
+      // Fallback: use ASR endpoint detection when VAD hasn't segmented yet
+      if (this.isSpeechActive && this.recognizer.isEndpoint(this.ongoingAsrStream)) {
+        const endpointResult = this.recognizer.getResult(this.ongoingAsrStream);
+        const endpointText = (endpointResult.text || '').trim();
+        if (endpointText) {
+          const speaker = this.ongoingSamples.length >= this.sampleRate * 0.5
+            ? this.identifySpeaker(new Float32Array(this.ongoingSamples))
+            : '';
+          this.emit('event', {
+            type: 'final',
+            text: endpointText,
+            speaker,
+            timestamp: Date.now(),
+          } as StreamingEvent);
+        }
+        // Reset for next utterance
+        this.ongoingAsrStream = this.recognizer.createStream();
+        this.lastPartialText = '';
+        this.pendingSamples = 0;
+        this.ongoingSamples = [];
+        this.isSpeechActive = false;
+        this.emit('event', {
+          type: 'vad',
+          isSpeaking: false,
           timestamp: Date.now(),
         } as StreamingEvent);
       }
@@ -568,7 +600,7 @@ export class VADSegmentedTranscriber extends EventEmitter {
     const text = this.transcribeSegment(segmentSamples);
 
     // Identify speaker
-    let speaker = 'Unknown';
+    let speaker = '';
     if (segmentSamples.length >= this.sampleRate * 0.5) {
       speaker = this.identifySpeaker(segmentSamples);
     }
@@ -588,6 +620,15 @@ export class VADSegmentedTranscriber extends EventEmitter {
     this.lastPartialText = '';
     this.pendingSamples = 0;
     this.ongoingSamples = [];
+
+    // Always signal speech end so the client clears the partial transcript,
+    // even if the segment produced no transcription text.
+    this.isSpeechActive = false;
+    this.emit('event', {
+      type: 'vad',
+      isSpeaking: false,
+      timestamp: Date.now(),
+    } as StreamingEvent);
   }
 
   /**
@@ -628,7 +669,7 @@ export class VADSegmentedTranscriber extends EventEmitter {
    */
   private identifySpeaker(samples: Float32Array): string {
     if (!this.speakerEmbedding || this.speakerManager.getNumSpeakers() === 0) {
-      return 'Unknown';
+      return '';
     }
 
     try {
@@ -636,26 +677,20 @@ export class VADSegmentedTranscriber extends EventEmitter {
       stream.acceptWaveform({ sampleRate: this.sampleRate, samples });
       stream.inputFinished();
 
-      if (!this.speakerEmbedding.isReady(stream)) return 'Unknown';
+      if (!this.speakerEmbedding.isReady(stream)) return '';
 
       const embedding = this.speakerEmbedding.compute(stream);
-      if (!embedding || embedding.length === 0) return 'Unknown';
+      if (!embedding || embedding.length === 0) return '';
 
+      // Always pick the closest enrolled speaker (threshold -1 accepts any cosine similarity)
       const name = this.speakerManager.search({
         v: new Float32Array(embedding),
-        threshold: 0.35,
+        threshold: -1,
       });
 
-      if (name && name !== '') return name;
-
-      const guess = this.speakerManager.search({
-        v: new Float32Array(embedding),
-        threshold: 0.1,
-      });
-
-      return guess || 'Unknown';
+      return name || '';
     } catch {
-      return 'Unknown';
+      return '';
     }
   }
 
@@ -692,7 +727,7 @@ export class VADSegmentedTranscriber extends EventEmitter {
       if (text) {
         const speaker = this.ongoingSamples.length >= this.sampleRate * 0.5
           ? this.identifySpeaker(new Float32Array(this.ongoingSamples))
-          : 'Unknown';
+          : '';
 
         this.emit('event', {
           type: 'final',

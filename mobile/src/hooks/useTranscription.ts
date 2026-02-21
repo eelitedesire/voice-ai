@@ -16,7 +16,7 @@ import {
   OnDeviceTranscriptionResult,
   StreamingServerMessage,
 } from '../types';
-import { getSettings } from '../services/StorageService';
+import { getSettings, getSpeakerProfiles } from '../services/StorageService';
 
 interface UseTranscriptionReturn {
   isActive: boolean;
@@ -54,6 +54,11 @@ export function useTranscription(documentDir: string): UseTranscriptionReturn {
         const asr = new OnDeviceASR();
         try {
           await asr.initialize(documentDir);
+          // Load enrolled speakers so the ASR can identify who is speaking.
+          const profiles = getSpeakerProfiles();
+          asr.setSpeakerReferences(
+            profiles.map(p => ({ name: p.name, embedding: p.voiceprint })),
+          );
           onDeviceRef.current = asr;
         } catch (err) {
           console.warn('On-device ASR init failed, falling back to server:', err);
@@ -98,7 +103,7 @@ export function useTranscription(documentDir: string): UseTranscriptionReturn {
             setTranscript(prev => [
               ...prev,
               {
-                speaker: result.speaker || 'Unknown',
+                speaker: result.speaker || '',
                 text: result.text,
                 timestamp: result.timestamp,
               },
