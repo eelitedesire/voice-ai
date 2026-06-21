@@ -50,3 +50,4 @@ models/
 
 # encrypted relationship vault (contains sensitive therapy data)
 .vault/
+.env*
