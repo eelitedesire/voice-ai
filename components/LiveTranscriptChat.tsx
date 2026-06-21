@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { ChatMessage, TranscriptEntry } from '@/types';
+import { ChatMessage, TranscriptEntry, SpeakerMatchInfo } from '@/types';
 
 interface LiveTranscriptChatProps {
   transcript: TranscriptEntry[];
@@ -33,16 +33,25 @@ export default function LiveTranscriptChat({
 }: LiveTranscriptChatProps) {
   const [inputText, setInputText] = useState('');
   const [selectedSpeaker, setSelectedSpeaker] = useState('');
-  const chatEndRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Build a unified timeline: transcript entries + chat messages, sorted by timestamp
   const timeline = buildTimeline(transcript, chatMessages);
 
-  // Auto-scroll to bottom on new messages
+  // Keep the newest line in view by scrolling ONLY the transcript box (not the
+  // page). scrollIntoView would scroll the whole window, yanking the page on
+  // every partial update; setting scrollTop on the container keeps it local.
+  // Only auto-scroll when the user is already near the bottom, so it never
+  // fights them while they scroll up to read earlier text.
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [timeline.length, isTherapistTyping]);
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    if (nearBottom) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [timeline.length, isTherapistTyping, partialTranscript]);
 
   // Set default speaker when speakers list updates
   useEffect(() => {
@@ -94,7 +103,10 @@ export default function LiveTranscriptChat({
   return (
     <div className="flex flex-col h-full">
       {/* Chat messages area */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-3 max-h-[500px] bg-gray-50 rounded-t-lg border border-gray-200">
+      <div
+        ref={scrollContainerRef}
+        className="flex-1 overflow-y-auto p-4 space-y-3 max-h-[500px] bg-gray-50 rounded-t-lg border border-gray-200"
+      >
         {timeline.length === 0 && (
           <div className="text-center text-gray-400 py-12">
             <p className="text-lg font-medium">No messages yet</p>
@@ -112,6 +124,7 @@ export default function LiveTranscriptChat({
                 <div className={`px-3 py-2 rounded-lg border ${colors.bg} ${colors.text} ${colors.border} max-w-[85%]`}>
                   <div className="flex items-center gap-2 mb-0.5">
                     <span className="font-semibold text-xs">{entry.speaker}</span>
+                    {entry.speakerInfo && <SpeakerConfidenceBadge info={entry.speakerInfo} />}
                     <span className="text-[10px] opacity-50">
                       {new Date(entry.timestamp).toLocaleTimeString()}
                     </span>
@@ -158,15 +171,21 @@ export default function LiveTranscriptChat({
           );
         })}
 
-        {/* Partial streaming transcript */}
+        {/* Live (partial) transcript — styled identically to a finalized
+            transcript bubble so that when the final arrives it settles in
+            place with no visual jump. A blinking caret signals it's live. */}
         {partialTranscript && (
           <div className="flex items-start gap-2">
-            <div className="flex-shrink-0 w-2 h-2 mt-2.5 rounded-full bg-green-400 animate-pulse" />
-            <div className="px-3 py-2 rounded-lg border border-dashed border-gray-300 bg-gray-50 text-gray-600 max-w-[85%]">
+            <div className="flex-shrink-0 w-2 h-2 mt-2.5 rounded-full bg-gray-300" />
+            <div className="px-3 py-2 rounded-lg border bg-gray-100 text-gray-700 border-gray-200 max-w-[85%]">
               <div className="flex items-center gap-2 mb-0.5">
-                <span className="text-[10px] opacity-50 italic">transcribing...</span>
+                <span className="font-semibold text-xs">&hellip;</span>
+                <span className="text-[10px] opacity-40 italic">live</span>
               </div>
-              <p className="text-sm italic">{partialTranscript}</p>
+              <p className="text-sm">
+                {partialTranscript}
+                <span className="caret-blink">▍</span>
+              </p>
             </div>
           </div>
         )}
@@ -186,8 +205,6 @@ export default function LiveTranscriptChat({
             </div>
           </div>
         )}
-
-        <div ref={chatEndRef} />
       </div>
 
       {/* Input area */}
@@ -240,6 +257,43 @@ export default function LiveTranscriptChat({
         </p>
       </div>
     </div>
+  );
+}
+
+// ------------------------------------------------------------------
+// Speaker confidence badge
+// ------------------------------------------------------------------
+
+/**
+ * Small inline pill showing WHY a speaker label was chosen: the decision tier
+ * (known / uncertain / unknown), the cosine similarity score, and — on hover —
+ * the full reason (closest enrolled speaker, runner-up, margin, etc.).
+ */
+function SpeakerConfidenceBadge({ info }: { info: SpeakerMatchInfo }) {
+  const style =
+    info.decision === 'known'
+      ? 'bg-green-100 text-green-700'
+      : info.decision === 'uncertain'
+      ? 'bg-amber-100 text-amber-700'
+      : 'bg-gray-200 text-gray-600';
+
+  const pct = Math.round(Math.max(0, info.score) * 100);
+  const label =
+    info.decision === 'known' ? `${pct}%` : `${info.decision} · ${pct}%`;
+
+  const tooltip =
+    `${info.reason}` +
+    (info.runnerUpName
+      ? ` | runner-up: ${info.runnerUpName} ${(info.runnerUpScore ?? 0).toFixed(2)}`
+      : '');
+
+  return (
+    <span
+      className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${style}`}
+      title={tooltip}
+    >
+      {label}
+    </span>
   );
 }
 

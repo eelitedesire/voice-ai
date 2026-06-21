@@ -47,6 +47,7 @@ export default function SessionRecorder({
           speaker: event.speaker,
           text: event.text,
           timestamp: event.timestamp,
+          speakerInfo: event.speakerInfo,
         };
         transcript.current.push(entry);
         onTranscriptUpdate(entry);

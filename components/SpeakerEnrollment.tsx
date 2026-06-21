@@ -13,6 +13,7 @@ const ENROLLMENT_TEXT =
 interface Speaker {
   id: string;
   name: string;
+  sampleCount?: number;
 }
 
 interface SpeakerEnrollmentProps {
@@ -154,7 +155,10 @@ export default function SpeakerEnrollment({ onSpeakersChanged }: SpeakerEnrollme
         throw new Error(data.error || 'Enrollment failed');
       }
 
-      setSuccess(`${data.speaker.name} enrolled successfully!`);
+      setSuccess(
+        `${data.speaker.name} enrolled! Tip: record again with the same name to ` +
+          `add more voice samples (different pace/distance) for better accuracy.`,
+      );
       setName('');
       await fetchSpeakers();
       onSpeakersChanged?.();
@@ -278,6 +282,20 @@ export default function SpeakerEnrollment({ onSpeakersChanged }: SpeakerEnrollme
                 className="inline-flex items-center gap-1.5 bg-gray-100 text-gray-800 px-3 py-1.5 rounded-full text-sm"
               >
                 {speaker.name}
+                {typeof speaker.sampleCount === 'number' && (
+                  <span
+                    className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
+                      speaker.sampleCount >= 3
+                        ? 'bg-green-100 text-green-700'
+                        : 'bg-amber-100 text-amber-700'
+                    }`}
+                    title={`${speaker.sampleCount} voice sample(s) enrolled${
+                      speaker.sampleCount < 3 ? ' — add more for reliable matching' : ''
+                    }`}
+                  >
+                    {speaker.sampleCount}×
+                  </span>
+                )}
                 <button
                   onClick={() => removeSpeaker(speaker.id)}
                   className="text-gray-400 hover:text-red-500 transition-colors ml-0.5"

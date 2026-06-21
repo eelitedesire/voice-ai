@@ -14,10 +14,13 @@ export async function GET() {
     const data = await fs.promises.readFile(DB_PATH, 'utf-8');
     const db: SpeakerDatabase = JSON.parse(data);
 
-    // Return speakers without voiceprint data (it's large and not needed by the UI)
+    // Return speakers without embedding data (large and not needed by the UI),
+    // but include how many voice samples are enrolled per speaker so the UI can
+    // encourage capturing more conditions for reliable identification.
     const speakers = db.speakers.map(s => ({
       id: s.id,
       name: s.name || s.role,
+      sampleCount: s.embeddings?.length ?? (s.voiceprint?.length ? 1 : 0),
     }));
 
     return NextResponse.json({ speakers });

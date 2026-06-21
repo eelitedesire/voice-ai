@@ -9,8 +9,10 @@ class PCMProcessor extends AudioWorkletProcessor {
     super();
     this._buffer = [];
     this._bufferSize = 0;
-    // We'll send chunks of ~100ms at 16kHz = 1600 samples
-    this._chunkSize = 1600;
+    // Send small ~32ms chunks (512 samples @16kHz). This matches the server's
+    // VAD window size and keeps live latency low — the recognizer gets fed and
+    // re-decoded ~31x/sec, so partial captions appear almost as fast as speech.
+    this._chunkSize = 512;
   }
 
   /**

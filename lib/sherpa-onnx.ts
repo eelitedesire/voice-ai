@@ -1,5 +1,6 @@
 import * as sherpa from 'sherpa-onnx-node';
 import { SpeakerDatabase, SpeakerProfile } from '@/types';
+import { SpeakerIdentifier, buildEnrolledSpeakers, configFromEnv } from './speaker-identification';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -156,6 +157,7 @@ export class SherpaONNXManager {
   private speakerEmbedding: any = null;
   private speakerManager: any = null; // Use SpeakerEmbeddingManager for recognition
   private speakerDatabase: SpeakerDatabase | null = null; // Keep for enrollment script compatibility
+  private speakerIdentifier: SpeakerIdentifier | null = null; // strict cosine identifier (recognition)
   private modelPath: string;
 
   constructor(modelPath: string = './models') {
@@ -223,13 +225,14 @@ export class SherpaONNXManager {
     try {
       const data = await fs.promises.readFile(dbPath, 'utf-8');
       this.speakerDatabase = JSON.parse(data);
+      this.speakerIdentifier = null; // rebuild lazily from the freshly loaded DB
 
-      console.log(`Loading speaker database: ${this.speakerDatabase.speakers.length} speakers`);
+      console.log(`Loading speaker database: ${this.speakerDatabase!.speakers.length} speakers`);
 
       // Only load into manager if requested (for recognition, not enrollment)
       if (loadToManager && this.speakerManager) {
         // Add each speaker to the SpeakerEmbeddingManager using addMulti()
-        for (const speaker of this.speakerDatabase.speakers) {
+        for (const speaker of this.speakerDatabase!.speakers) {
           const voiceprint = new Float32Array(speaker.voiceprint);
           // Use name field if available, fall back to role for backward compat
           const displayName = speaker.name || speaker.role;
@@ -349,6 +352,53 @@ export class SherpaONNXManager {
     }
   }
 
+  /**
+   * Extract MULTIPLE speaker embeddings from one enrolment recording by sliding
+   * a window across it. Capturing several embeddings (rather than one) makes the
+   * enrolled profile robust to intra-speaker variation (pitch, pacing, position).
+   */
+  async extractEnrollmentEmbeddings(audioPath: string): Promise<number[][]> {
+    const wave = sherpa.readWave(audioPath);
+    if (!wave || !wave.samples) {
+      throw new Error(`Failed to read audio file: ${audioPath}`);
+    }
+    const samples: Float32Array =
+      wave.samples instanceof Float32Array ? wave.samples : new Float32Array(wave.samples);
+    const sr = wave.sampleRate;
+
+    const win = Math.floor(3.0 * sr); // 3s analysis windows
+    const hop = Math.floor(1.5 * sr); // 50% overlap
+
+    const embeddings: number[][] = [];
+    if (samples.length <= win) {
+      embeddings.push(await this.extractVoiceprintFromSamples(samples, sr));
+    } else {
+      for (let off = 0; off + win <= samples.length; off += hop) {
+        try {
+          embeddings.push(
+            await this.extractVoiceprintFromSamples(samples.subarray(off, off + win), sr),
+          );
+        } catch {
+          // skip a bad window; others still contribute
+        }
+      }
+      // Always include the final window so the tail isn't lost.
+      const tail = samples.subarray(Math.max(0, samples.length - win));
+      try {
+        embeddings.push(await this.extractVoiceprintFromSamples(tail, sr));
+      } catch {
+        // ignore
+      }
+    }
+
+    if (embeddings.length === 0) {
+      // Fallback: whole clip as a single embedding.
+      embeddings.push(await this.extractVoiceprintFromSamples(samples, sr));
+    }
+    console.log(`Enrolment: extracted ${embeddings.length} embedding(s) from ${audioPath}`);
+    return embeddings;
+  }
+
   async enrollSpeaker(
     speakerId: string,
     name: string,
@@ -358,53 +408,56 @@ export class SherpaONNXManager {
       throw new Error('Speaker database not loaded');
     }
 
-    const voiceprint = await this.extractVoiceprint(audioPath);
+    const newEmbeddings = await this.extractEnrollmentEmbeddings(audioPath);
 
-    const profile: SpeakerProfile = {
-      id: speakerId,
-      name,
-      role: name,
-      voiceprint,
-    };
-
-    // Remove existing speaker with same ID
-    this.speakerDatabase.speakers = this.speakerDatabase.speakers.filter(
-      s => s.id !== speakerId
-    );
-
-    this.speakerDatabase.speakers.push(profile);
+    const existing = this.speakerDatabase.speakers.find((s) => s.id === speakerId);
+    if (existing) {
+      // Re-enrolment APPENDS samples (capture different conditions over time)
+      // rather than overwriting the profile.
+      const prior = existing.embeddings
+        ?? (existing.voiceprint?.length ? [existing.voiceprint] : []);
+      existing.embeddings = [...prior, ...newEmbeddings];
+      existing.voiceprint = existing.embeddings[0]; // legacy mirror
+      existing.name = name;
+      existing.role = name;
+    } else {
+      const profile: SpeakerProfile = {
+        id: speakerId,
+        name,
+        role: name,
+        voiceprint: newEmbeddings[0],
+        embeddings: newEmbeddings,
+      };
+      this.speakerDatabase.speakers.push(profile);
+    }
   }
 
+  /**
+   * Strict speaker identification via the shared SpeakerIdentifier (cosine +
+   * margin + calibrated thresholds). Returns the enrolled name ONLY when the
+   * match is confident enough; otherwise null so the caller labels it Unknown.
+   * No "best guess" fallback — that was the source of false positives.
+   */
   async identifySpeaker(voiceprint: number[]): Promise<string | null> {
-    if (!this.speakerManager || this.speakerManager.getNumSpeakers() === 0) {
-      console.log('No speakers enrolled for identification');
+    if (!this.speakerDatabase || this.speakerDatabase.speakers.length === 0) {
       return null;
     }
-
-    console.log(`Searching through ${this.speakerManager.getNumSpeakers()} speakers...`);
-
-    // Use SpeakerEmbeddingManager's search method
-    const threshold = 0.35; // Similarity threshold
-    const typedVoiceprint = new Float32Array(voiceprint);
-    const speakerName = this.speakerManager.search({
-      v: typedVoiceprint,
-      threshold: threshold,
-    });
-
-    if (speakerName && speakerName !== '') {
-      console.log(`✅ Identified speaker: ${speakerName} (threshold: ${threshold})`);
-      return speakerName;
+    if (!this.speakerIdentifier) {
+      const enrolled = buildEnrolledSpeakers(this.speakerDatabase.speakers);
+      // Batch path identifies windows independently, so disable cross-window
+      // unknown clustering (it can't carry state reliably here).
+      this.speakerIdentifier = new SpeakerIdentifier(enrolled, {
+        ...configFromEnv(),
+        labelUnknownClusters: false,
+      });
     }
 
-    const bestGuess = this.speakerManager.search({
-      v: typedVoiceprint,
-      threshold: 0.1, // Very loose
-    });
-
-    if (bestGuess) {
-      console.log(`⚠️ Low confidence match: ${bestGuess}. Using as best guess.`);
-      return bestGuess;
+    const m = this.speakerIdentifier.identify(voiceprint);
+    if (m.decision === 'known') {
+      console.log(`✅ Identified ${m.speaker} (score=${m.score.toFixed(2)}; ${m.reason})`);
+      return m.speaker;
     }
+    console.log(`↪︎ Unknown (${m.reason})`);
     return null;
   }
 

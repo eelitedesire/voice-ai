@@ -80,9 +80,11 @@ export function convertBlobToWav(blob: Blob): Promise<ArrayBuffer> {
   });
 }
 
+import { SpeakerMatchInfo } from '@/types';
+
 export type StreamingAudioEvent =
   | { type: 'transcript_partial'; text: string; timestamp: number }
-  | { type: 'transcript_final'; text: string; speaker: string; timestamp: number }
+  | { type: 'transcript_final'; text: string; speaker: string; timestamp: number; speakerInfo?: SpeakerMatchInfo }
   | { type: 'vad'; isSpeaking: boolean }
   | { type: 'connected' }
   | { type: 'disconnected' }
@@ -112,8 +114,16 @@ export class StreamingAudioCapture {
 
   async start(): Promise<void> {
     try {
-      // Get microphone
-      this.mediaStream = await navigator.mediaDevices.getUserMedia({
+      // Kick off everything that can run concurrently. The mic permission/open,
+      // the AudioContext + worklet module load, and the WebSocket handshake are
+      // independent — running them in parallel removes most of the perceived
+      // "Start Session" delay (otherwise they stack up serially).
+      this.audioContext = new AudioContext({
+        sampleRate: 48000,
+        latencyHint: 'interactive',
+      });
+
+      const micPromise = navigator.mediaDevices.getUserMedia({
         audio: {
           channelCount: 1,
           echoCancellation: true,
@@ -121,27 +131,33 @@ export class StreamingAudioCapture {
           autoGainControl: true,
         },
       });
+      const workletPromise = this.audioContext.audioWorklet.addModule(
+        '/audio-worklet-processor.js',
+      );
+      const wsPromise = this.connectWebSocket();
+      // Resume in case the context starts suspended (autoplay policy).
+      const resumePromise = this.audioContext.resume().catch(() => {});
 
-      // Set up AudioContext + WorkletNode
-      this.audioContext = new AudioContext({ sampleRate: 48000 });
-      await this.audioContext.audioWorklet.addModule('/audio-worklet-processor.js');
+      const [mediaStream] = await Promise.all([
+        micPromise,
+        workletPromise,
+        wsPromise,
+        resumePromise,
+      ]);
+      this.mediaStream = mediaStream;
 
       const source = this.audioContext.createMediaStreamSource(this.mediaStream);
       this.workletNode = new AudioWorkletNode(this.audioContext, 'pcm-processor');
 
-      // Connect WebSocket
-      await this.connectWebSocket();
-
-      // Forward PCM chunks from worklet to WebSocket
+      // Forward PCM chunks from worklet to WebSocket as soon as they're ready.
       this.workletNode.port.onmessage = (event) => {
         if (event.data.type === 'audio' && this.ws?.readyState === WebSocket.OPEN) {
           this.ws.send(event.data.samples);
         }
       };
 
-      // Wire up audio graph
+      // Wire up audio graph (don't connect to destination — no playback).
       source.connect(this.workletNode);
-      // Don't connect to destination (we don't want playback)
 
       this.isActive = true;
       this.reconnectAttempts = 0;
@@ -183,6 +199,7 @@ export class StreamingAudioCapture {
                 text: msg.text,
                 speaker: msg.speaker,
                 timestamp: msg.timestamp,
+                speakerInfo: msg.speakerInfo,
               });
               break;
             case 'vad':

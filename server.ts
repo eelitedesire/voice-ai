@@ -3,6 +3,7 @@ import { parse } from 'url';
 import next from 'next';
 import { WebSocketServer, WebSocket } from 'ws';
 import { VADSegmentedTranscriber, StreamingEvent } from './lib/streaming-transcription';
+import { warmUpModels, getSharedModels } from './lib/model-registry';
 
 const dev = process.env.NODE_ENV !== 'production';
 const hostname = process.env.HOSTNAME || 'localhost';
@@ -10,6 +11,13 @@ const port = parseInt(process.env.PORT || '3000', 10);
 
 const app = next({ dev, hostname, port });
 const handle = app.getRequestHandler();
+
+// Start loading the heavy ASR/speaker models the moment the server boots, so
+// they're warm before any user clicks "Start Session". Failures here are
+// non-fatal — the first connection will retry the load.
+warmUpModels().catch((err) => {
+  console.error('[Server] Model warm-up failed (will retry on demand):', err);
+});
 
 app.prepare().then(() => {
   const server = createServer(async (req, res) => {
@@ -35,25 +43,29 @@ app.prepare().then(() => {
     let transcriber: VADSegmentedTranscriber | null = null;
     let initPromise: Promise<void> | null = null;
 
-    // Initialize transcriber on connection
-    transcriber = new VADSegmentedTranscriber();
-    initPromise = transcriber.initialize().then(() => {
-      // Forward transcriber events to WebSocket
-      transcriber!.on('event', (event: StreamingEvent) => {
+    // Build the transcriber from the shared, pre-warmed models. Because the
+    // heavy models are already loaded, initialize() only mints a cheap
+    // per-connection VAD + ASR stream — startup is effectively instant.
+    initPromise = getSharedModels()
+      .then((models) => {
+        transcriber = new VADSegmentedTranscriber({ models });
+        transcriber.on('event', (event: StreamingEvent) => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify(event));
+          }
+        });
+        return transcriber.initialize();
+      })
+      .catch((err) => {
+        console.error('[WS] Transcriber init failed:', err);
         if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify(event));
+          ws.send(JSON.stringify({
+            type: 'error',
+            message: 'Failed to initialize transcription engine',
+          }));
+          ws.close();
         }
       });
-    }).catch((err) => {
-      console.error('[WS] Transcriber init failed:', err);
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
-          type: 'error',
-          message: 'Failed to initialize transcription engine',
-        }));
-        ws.close();
-      }
-    });
 
     ws.on('message', async (data: Buffer | ArrayBuffer | Buffer[], isBinary: boolean) => {
       // Wait for initialization

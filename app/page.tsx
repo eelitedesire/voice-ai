@@ -1,24 +1,40 @@
 'use client';
 
-import { useState, useCallback, useEffect } from 'react';
-import { TranscriptEntry, TherapeuticAnalysis, ChatMessage } from '@/types';
-import SessionRecorder from '@/components/SessionRecorder';
-import LiveTranscriptChat from '@/components/LiveTranscriptChat';
-import AnalysisPanel from '@/components/AnalysisPanel';
-import SpeakerEnrollment from '@/components/SpeakerEnrollment';
+import { useState, useCallback, useEffect, useRef } from 'react';
+import Image from 'next/image';
+import { TranscriptEntry, ChatMessage } from '@/types';
+import { StreamingAudioCapture, StreamingAudioEvent } from '@/lib/audio-utils';
+import { ThemeProvider } from '@/lib/hooks/useTheme';
+import { ConnectionStatus } from '@/components/ui/ConnectionStatus';
+import { ThemeToggle } from '@/components/ui/ThemeToggle';
+import { TabBar } from '@/components/ui/TabBar';
+import { TranscriptTimeline } from '@/components/live-session/TranscriptTimeline';
+import { LiveHUD } from '@/components/live-session/LiveHUD';
+import { ConversationAnalytics } from '@/components/analytics/ConversationAnalytics';
+import { EnrollmentCard } from '@/components/enroll/EnrollmentCard';
 import PromptEditor from '@/components/PromptEditor';
 import MemoryPanel from '@/components/MemoryPanel';
+import { AIChatInput } from '@/components/live-session/AIChatInput';
+import { AudioFileUpload } from '@/components/live-session/AudioFileUpload';
+import { UserPlus, Radio, Settings, Brain, BarChart3 } from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
 
-export default function Home() {
+function HomePage() {
+  const [activeTab, setActiveTab] = useState('enroll');
+  const [connectionState, setConnectionState] = useState<'disconnected' | 'connecting' | 'connected'>('disconnected');
+  const [isRecording, setIsRecording] = useState(false);
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
-  const [showAnalysis, setShowAnalysis] = useState(false);
-  const [supervisorPrompt, setSupervisorPrompt] = useState('');
-  const [isTherapistTyping, setIsTherapistTyping] = useState(false);
-  const [speakers, setSpeakers] = useState<string[]>([]);
   const [partialTranscript, setPartialTranscript] = useState('');
+  const [speakers, setSpeakers] = useState<Array<{ id: string; name: string; sampleCount?: number }>>([]);
+  const [activeSpeaker, setActiveSpeaker] = useState<string>();
+  const [showAnalytics, setShowAnalytics] = useState(false);
+  const [supervisorPrompt, setSupervisorPrompt] = useState('');
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [isAIProcessing, setIsAIProcessing] = useState(false);
+  
+  const streamingCapture = useRef<StreamingAudioCapture | null>(null);
+  const audioStreamRef = useRef<MediaStream | null>(null);
 
-  // Fetch enrolled speakers on mount
   useEffect(() => {
     fetchSpeakers();
   }, []);
@@ -28,84 +44,100 @@ export default function Home() {
       const res = await fetch('/api/speakers');
       if (res.ok) {
         const data = await res.json();
-        const names: string[] = data.speakers?.map((s: { name: string }) => s.name) ?? [];
-        // Always ensure at least default options
-        const allNames = new Set([...names]);
-        if (allNames.size === 0) {
-          allNames.add('Partner 1');
-          allNames.add('Partner 2');
+        setSpeakers(data.speakers || []);
+      }
+    } catch (err) {
+      console.error('Failed to fetch speakers:', err);
+    }
+  };
+
+  const handleStreamingEvent = useCallback((event: StreamingAudioEvent) => {
+    switch (event.type) {
+      case 'connected':
+        setConnectionState('connected');
+        break;
+      case 'disconnected':
+        setConnectionState('disconnected');
+        break;
+      case 'transcript_partial':
+        setPartialTranscript(event.text);
+        break;
+      case 'transcript_final': {
+        const entry: TranscriptEntry = {
+          speaker: event.speaker,
+          text: event.text,
+          timestamp: event.timestamp,
+          speakerInfo: event.speakerInfo,
+        };
+        setTranscript(prev => [...prev, entry]);
+        setPartialTranscript('');
+        setActiveSpeaker(event.speaker);
+        break;
+      }
+      case 'vad':
+        if (!event.isSpeaking) {
+          setPartialTranscript('');
+          setActiveSpeaker(undefined);
         }
-        setSpeakers(Array.from(allNames));
-      }
-    } catch {
-      // Fallback default speakers
-      setSpeakers(['Partner 1', 'Partner 2']);
+        break;
+      case 'error':
+        console.error('Streaming error:', event.message);
+        break;
+    }
+  }, []);
+
+  const startSession = async () => {
+    try {
+      setConnectionState('connecting');
+      streamingCapture.current = new StreamingAudioCapture(handleStreamingEvent);
+      await streamingCapture.current.start();
+      setIsRecording(true);
+    } catch (err) {
+      console.error('Failed to start session:', err);
+      setConnectionState('disconnected');
     }
   };
 
-  const handleTranscriptUpdate = (entry: TranscriptEntry) => {
-    setTranscript(prev => [...prev, entry]);
-    // Add new speaker to the dropdown if not already present
-    setSpeakers(prev => {
-      if (!prev.includes(entry.speaker)) {
-        return [...prev, entry.speaker];
-      }
-      return prev;
+  const stopSession = () => {
+    if (streamingCapture.current) {
+      streamingCapture.current.stop();
+      streamingCapture.current = null;
+    }
+    setIsRecording(false);
+    setConnectionState('disconnected');
+    setActiveSpeaker(undefined);
+    setPartialTranscript('');
+  };
+
+  const handleEnroll = async (name: string, audioBlob: Blob) => {
+    const formData = new FormData();
+    formData.append('audio', audioBlob, 'enrollment.webm');
+    formData.append('name', name);
+
+    const res = await fetch('/api/enroll', { method: 'POST', body: formData });
+    if (!res.ok) throw new Error('Enrollment failed');
+    
+    await fetchSpeakers();
+  };
+
+  const handleRemoveSpeaker = async (id: string) => {
+    const res = await fetch('/api/speakers', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
     });
+    if (!res.ok) throw new Error('Failed to remove speaker');
+    await fetchSpeakers();
   };
 
-  const handleSessionComplete = (finalTranscript: TranscriptEntry[]) => {
-    setTranscript(finalTranscript);
-    setShowAnalysis(true);
-
-    // Add speakers from transcript
-    const newSpeakers = new Set(speakers);
-    for (const entry of finalTranscript) {
-      newSpeakers.add(entry.speaker);
-    }
-    setSpeakers(Array.from(newSpeakers));
-  };
-
-  const handleAnalysisComplete = (analysis: TherapeuticAnalysis) => {
-    // Post the analysis summary as a therapist message in the chat
-    const summaryParts: string[] = [];
-
-    if (analysis.summary) {
-      summaryParts.push(analysis.summary);
-    }
-    if (analysis.keyBreakthroughs && analysis.keyBreakthroughs.length > 0) {
-      summaryParts.push(`\nKey observations:\n${analysis.keyBreakthroughs.map(b => `  - ${b}`).join('\n')}`);
-    }
-    if (analysis.homework) {
-      summaryParts.push(`\nSuggested exercise: ${analysis.homework}`);
-    }
-    if (analysis.concerns && analysis.concerns.length > 0) {
-      summaryParts.push(`\nImportant to address:\n${analysis.concerns.map(c => `  - ${c}`).join('\n')}`);
-    }
-
-    const analysisMessage: ChatMessage = {
-      id: `analysis-${Date.now()}`,
-      role: 'therapist',
-      text: summaryParts.join('\n'),
-      timestamp: Date.now(),
-      kind: 'analysis-summary',
-    };
-
-    setChatMessages(prev => [...prev, analysisMessage]);
-  };
-
-  const handleSendMessage = useCallback(async (message: ChatMessage) => {
-    // Add the speaker's message to chat
-    setChatMessages(prev => [...prev, message]);
-
-    // Send to therapist LLM for a response
-    setIsTherapistTyping(true);
+  const handleSendMessage = async (message: string, speaker: string) => {
+    setIsAIProcessing(true);
     try {
       const res = await fetch('/api/therapist-chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          message: `[${message.speaker}]: ${message.text}`,
+          message: `[${speaker}]: ${message}`,
           chatHistory: chatMessages,
           transcript,
           systemPrompt: supervisorPrompt || undefined,
@@ -114,111 +146,222 @@ export default function Home() {
 
       if (res.ok) {
         const data = await res.json();
-        const therapistMessage: ChatMessage = {
-          id: `therapist-${Date.now()}`,
+        const aiMessage: ChatMessage = {
+          id: `ai-${Date.now()}`,
           role: 'therapist',
           text: data.reply,
           timestamp: Date.now(),
           kind: 'message',
         };
-        setChatMessages(prev => [...prev, therapistMessage]);
+        setChatMessages(prev => [...prev, aiMessage]);
       }
     } catch (err) {
-      console.error('Failed to get therapist response:', err);
-      const errorMessage: ChatMessage = {
-        id: `error-${Date.now()}`,
-        role: 'therapist',
-        text: 'I apologize, I was unable to respond at this time. Please try again.',
-        timestamp: Date.now(),
-        kind: 'message',
-      };
-      setChatMessages(prev => [...prev, errorMessage]);
+      console.error('Failed to get AI response:', err);
     } finally {
-      setIsTherapistTyping(false);
+      setIsAIProcessing(false);
     }
-  }, [chatMessages, transcript, supervisorPrompt]);
-
-  const resetSession = () => {
-    setTranscript([]);
-    setChatMessages([]);
-    setShowAnalysis(false);
-    setPartialTranscript('');
   };
 
+  const handleFileUpload = async (file: File) => {
+    const formData = new FormData();
+    formData.append('audio', file);
+
+    const res = await fetch('/api/transcribe', {
+      method: 'POST',
+      body: formData,
+    });
+
+    if (!res.ok) throw new Error('Transcription failed');
+
+    const result = await res.json();
+    if (result.transcript) {
+      setTranscript(prev => [...prev, ...result.transcript]);
+    }
+  };
+
+  const uniqueSpeakers = Array.from(new Set(transcript.map(t => t.speaker)));
+
   return (
-    <main className="min-h-screen bg-gradient-to-br from-blue-50 to-purple-50 p-8">
-      <div className="max-w-6xl mx-auto">
-        {/* Header */}
-        <div className="text-center mb-8">
-          <h1 className="text-4xl font-bold text-gray-900 mb-2">
-            AI Co-Therapist Platform
-          </h1>
-          <p className="text-gray-600">
-            Voice-enabled therapeutic session assistant with real-time transcription
-          </p>
-        </div>
+    <div className="min-h-screen bg-base transition-colors">
+      {/* App Shell */}
+      <header className="sticky top-0 z-50 glass border-b border-default">
+        <div className="max-w-[1920px] mx-auto px-4 sm:px-6 py-3 sm:py-4">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+              <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl overflow-hidden shadow-lg shrink-0 bg-surface">
+                <Image
+                  src="/sanuvia.png"
+                  alt="Sanuvia"
+                  width={40}
+                  height={40}
+                  priority
+                  className="w-full h-full object-cover"
+                />
+              </div>
+              <div className="min-w-0">
+                <h1 className="text-lg sm:text-xl font-semibold text-primary truncate">Sanuvia</h1>
+                <p className="text-xs text-secondary truncate">Real-time Voice AI</p>
+              </div>
+            </div>
 
-        {/* Session Controls */}
-        <div className="bg-white rounded-xl shadow-lg p-6 mb-8">
-          <div className="flex justify-between items-center mb-6">
-            <h2 className="text-2xl font-semibold">Session Control</h2>
-            {(transcript.length > 0 || chatMessages.length > 0) && (
-              <button
-                onClick={resetSession}
-                className="px-4 py-2 text-sm bg-gray-200 hover:bg-gray-300 rounded-lg transition"
-              >
-                New Session
-              </button>
-            )}
+            <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+              <ConnectionStatus state={connectionState} />
+              <ThemeToggle />
+            </div>
           </div>
+        </div>
+      </header>
 
-          <SessionRecorder
-            onTranscriptUpdate={handleTranscriptUpdate}
-            onSessionComplete={handleSessionComplete}
-            onPartialTranscript={setPartialTranscript}
+      <main className="max-w-[1920px] mx-auto px-4 sm:px-6 py-6 sm:py-8">
+        {/* Tab Navigation */}
+        <div className="mb-8">
+          <TabBar
+            tabs={[
+              { id: 'enroll', label: 'Enroll Speakers', icon: <UserPlus className="w-4 h-4" /> },
+              { id: 'live', label: 'Live Session', icon: <Radio className="w-4 h-4" /> },
+              { id: 'settings', label: 'AI Supervisor', icon: <Settings className="w-4 h-4" /> },
+              { id: 'memory', label: 'Memory', icon: <Brain className="w-4 h-4" /> },
+            ]}
+            activeTab={activeTab}
+            onTabChange={setActiveTab}
           />
         </div>
 
-        {/* Live Transcript Chat */}
-        <div className="bg-white rounded-xl shadow-lg p-6 mb-8">
-          <h2 className="text-2xl font-semibold mb-4">Live Transcript</h2>
-          <LiveTranscriptChat
-            transcript={transcript}
-            chatMessages={chatMessages}
-            onSendMessage={handleSendMessage}
-            speakers={speakers}
-            isTherapistTyping={isTherapistTyping}
-            partialTranscript={partialTranscript}
-          />
-        </div>
+        <AnimatePresence mode="wait">
+          {activeTab === 'enroll' && (
+            <motion.div
+              key="enroll"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              transition={{ duration: 0.2 }}
+              className="space-y-6"
+            >
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {speakers.map(speaker => (
+                  <EnrollmentCard
+                    key={speaker.id}
+                    speaker={speaker}
+                    onEnroll={handleEnroll}
+                    onRemove={handleRemoveSpeaker}
+                  />
+                ))}
+                <EnrollmentCard onEnroll={handleEnroll} />
+              </div>
+            </motion.div>
+          )}
 
-        {/* Supervisor Prompt Configuration */}
-        <div className="bg-white rounded-xl shadow-lg p-6 mb-8">
-          <PromptEditor onPromptChange={setSupervisorPrompt} />
-        </div>
+          {activeTab === 'live' && (
+            <motion.div
+              key="live"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              transition={{ duration: 0.2 }}
+              className="space-y-6"
+            >
+              {/* Live HUD with Upload */}
+              <div className="rounded-xl border border-default bg-surface p-6">
+                <div className="flex flex-col lg:flex-row gap-6 items-start lg:items-center">
+                  <div className="flex-1 min-w-0">
+                    <LiveHUD
+                      isRecording={isRecording}
+                      onStart={startSession}
+                      onStop={stopSession}
+                      audioStream={audioStreamRef.current}
+                      confidence={0.85}
+                      speakers={uniqueSpeakers}
+                      activeSpeaker={activeSpeaker}
+                    />
+                  </div>
+                  <div className="w-full lg:w-auto lg:min-w-[280px]">
+                    <AudioFileUpload onUpload={handleFileUpload} disabled={isRecording} />
+                  </div>
+                </div>
+              </div>
 
-        {/* Analysis Panel */}
-        {showAnalysis && (
-          <div className="bg-white rounded-xl shadow-lg p-6 mb-8">
-            <AnalysisPanel
-              transcript={transcript}
-              systemPrompt={supervisorPrompt}
-              onAnalysisComplete={handleAnalysisComplete}
-            />
-          </div>
-        )}
+              {/* Transcript Timeline - Full Width */}
+              <div className="rounded-xl border border-default bg-surface overflow-hidden">
+                <div className="h-[500px]">
+                  <TranscriptTimeline
+                    transcript={transcript}
+                    partialTranscript={partialTranscript}
+                  />
+                </div>
+              </div>
 
-        {/* Session Memory */}
-        <div className="bg-white rounded-xl shadow-lg p-6 mb-8">
-          <MemoryPanel />
-        </div>
+              {/* AI Chat Input - Full Width */}
+              <div className="rounded-xl border border-default bg-surface">
+                <AIChatInput
+                  onSendMessage={handleSendMessage}
+                  speakers={uniqueSpeakers}
+                  isProcessing={isAIProcessing}
+                />
+              </div>
 
-        {/* Speaker Enrollment */}
-        <div className="bg-white rounded-xl shadow-lg p-6 mb-8">
-          <h2 className="text-2xl font-semibold mb-4">Enroll Speakers</h2>
-          <SpeakerEnrollment />
-        </div>
-      </div>
-    </main>
+              {/* Analytics Toggle */}
+              {transcript.length > 0 && (
+                <div className="rounded-xl border border-default bg-surface p-6">
+                  <button
+                    onClick={() => setShowAnalytics(!showAnalytics)}
+                    className="flex items-center gap-2 text-sm font-medium text-primary hover:text-accent transition-colors"
+                  >
+                    <BarChart3 className="w-4 h-4" />
+                    {showAnalytics ? 'Hide' : 'Show'} Conversation Analytics
+                  </button>
+                  
+                  {showAnalytics && (
+                    <motion.div
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: 'auto' }}
+                      exit={{ opacity: 0, height: 0 }}
+                      className="mt-6"
+                    >
+                      <ConversationAnalytics transcript={transcript} />
+                    </motion.div>
+                  )}
+                </div>
+              )}
+            </motion.div>
+          )}
+
+          {activeTab === 'settings' && (
+            <motion.div
+              key="settings"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              transition={{ duration: 0.2 }}
+            >
+              <div className="rounded-xl border border-default bg-surface p-8">
+                <PromptEditor onPromptChange={setSupervisorPrompt} />
+              </div>
+            </motion.div>
+          )}
+
+          {activeTab === 'memory' && (
+            <motion.div
+              key="memory"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              transition={{ duration: 0.2 }}
+            >
+              <div className="rounded-xl border border-default bg-surface p-8">
+                <MemoryPanel />
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </main>
+    </div>
+  );
+}
+
+export default function Home() {
+  return (
+    <ThemeProvider>
+      <HomePage />
+    </ThemeProvider>
   );
 }

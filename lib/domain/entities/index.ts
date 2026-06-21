@@ -15,6 +15,20 @@ export interface TranscriptEntry {
   speaker: string;
   text: string;
   timestamp: number;
+  /** Speaker-identification diagnostics for confidence visualisation. */
+  speakerInfo?: SpeakerMatchInfo;
+}
+
+/** Lightweight, serialisable speaker-match result attached to a transcript line. */
+export interface SpeakerMatchInfo {
+  decision: 'known' | 'uncertain' | 'unknown';
+  /** Cosine similarity (-1..1) to the closest enrolled speaker. */
+  score: number;
+  /** Closest enrolled speaker (even if not accepted). */
+  bestName: string;
+  runnerUpName?: string;
+  runnerUpScore?: number;
+  reason: string;
 }
 
 export interface Session {
@@ -60,7 +74,12 @@ export interface SpeakerProfile {
   id: string;
   name: string;
   role: string;
+  /** Legacy single embedding. Kept for backward compatibility; new enrolments
+   *  populate `embeddings` and mirror the first one here. */
   voiceprint: number[];
+  /** Multiple L2-normalisable embeddings captured across the enrolment audio
+   *  (and appended on re-enrolment) for stable, condition-robust matching. */
+  embeddings?: number[][];
 }
 
 export interface SpeakerDatabase {
@@ -92,7 +111,7 @@ export interface MemoryDatabase {
 /** Messages sent from server to client over WebSocket */
 export type StreamingServerMessage =
   | { type: 'partial'; text: string; timestamp: number }
-  | { type: 'final'; text: string; speaker: string; timestamp: number }
+  | { type: 'final'; text: string; speaker: string; timestamp: number; speakerInfo?: SpeakerMatchInfo }
   | { type: 'vad'; isSpeaking: boolean; timestamp: number }
   | { type: 'ready' }
   | { type: 'error'; message: string };
