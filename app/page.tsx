@@ -25,7 +25,14 @@ function HomePage() {
   const [isRecording, setIsRecording] = useState(false);
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
   const [partialTranscript, setPartialTranscript] = useState('');
-  const [speakers, setSpeakers] = useState<Array<{ id: string; name: string; sampleCount?: number }>>([]);
+  const [speakers, setSpeakers] = useState<Array<{
+    id: string;
+    name: string;
+    sampleCount?: number;
+    enrollmentStatus?: 'incomplete' | 'complete';
+    conditions?: string[];
+    remainingConditions?: string[];
+  }>>([]);
   const [activeSpeaker, setActiveSpeaker] = useState<string>();
   const [showAnalytics, setShowAnalytics] = useState(false);
   const [supervisorPrompt, setSupervisorPrompt] = useState('');
@@ -109,15 +116,28 @@ function HomePage() {
     setPartialTranscript('');
   };
 
-  const handleEnroll = async (name: string, audioBlob: Blob) => {
+  const handleEnrollCondition = async (name: string, condition: string, audioBlob: Blob) => {
     const formData = new FormData();
     formData.append('audio', audioBlob, 'enrollment.webm');
     formData.append('name', name);
+    formData.append('condition', condition);
 
     const res = await fetch('/api/enroll', { method: 'POST', body: formData });
-    if (!res.ok) throw new Error('Enrollment failed');
-    
-    await fetchSpeakers();
+    const data = await res.json().catch(() => ({}));
+    // 200 = accepted, 422 = well-formed but rejected (redo). 5xx = real failure.
+    if (res.status >= 500) throw new Error(data.error || 'Enrollment failed');
+    return data;
+  };
+
+  const handleFinalize = async (name: string) => {
+    const res = await fetch('/api/enroll/finalize', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.status >= 500) throw new Error(data.error || 'Finalize failed');
+    return data;
   };
 
   const handleRemoveSpeaker = async (id: string) => {
@@ -242,11 +262,17 @@ function HomePage() {
                   <EnrollmentCard
                     key={speaker.id}
                     speaker={speaker}
-                    onEnroll={handleEnroll}
+                    onEnrollCondition={handleEnrollCondition}
+                    onFinalize={handleFinalize}
                     onRemove={handleRemoveSpeaker}
+                    onRefresh={fetchSpeakers}
                   />
                 ))}
-                <EnrollmentCard onEnroll={handleEnroll} />
+                <EnrollmentCard
+                  onEnrollCondition={handleEnrollCondition}
+                  onFinalize={handleFinalize}
+                  onRefresh={fetchSpeakers}
+                />
               </div>
             </motion.div>
           )}

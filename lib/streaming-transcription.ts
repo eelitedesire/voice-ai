@@ -9,6 +9,9 @@ import {
   l2normalize,
   cosineNormalized,
 } from './speaker-identification';
+import { SpeakerTracker, UNKNOWN_SPEAKER } from './domain/speaker-tracker';
+import { loadAsNormContext, buildTrackerConfig } from './asnorm-context';
+import type { AsNormContext } from './speaker-identification';
 import { SpeakerMatchInfo } from './domain/entities';
 
 export interface StreamingEvent {
@@ -473,6 +476,12 @@ export class VADSegmentedTranscriber extends EventEmitter {
   private speakerId: SpeakerIdentifier | null = null;
   private vad: any = null;
 
+  // Temporal identity tracker (stabilises the label across segments) + the
+  // map from enrolled speaker id → display name, and the active AS-Norm context.
+  private tracker: SpeakerTracker | null = null;
+  private enrolledById = new Map<string, string>();
+  private asnorm: AsNormContext | null = null;
+
   private readonly injectedModels?: SharedModels;
   private modelPath: string;
   private sampleRate = 16000;
@@ -534,8 +543,19 @@ export class VADSegmentedTranscriber extends EventEmitter {
       // enrolled speakers are picked up on the next session. Unknown-voice
       // clustering state lives in this per-connection instance.
       const enrolled = loadEnrolledSpeakers();
-      this.speakerId = new SpeakerIdentifier(enrolled, configFromEnv());
-      console.log(`[VADSegmentedTranscriber] ${enrolled.length} enrolled speaker(s) loaded`);
+      const idCfg = configFromEnv();
+      // Load AS-Norm context (cohort + calibration); null ⇒ degraded mode (logged).
+      this.asnorm = loadAsNormContext(this.modelPath);
+      this.speakerId = new SpeakerIdentifier(enrolled, idCfg, this.asnorm);
+      this.enrolledById = new Map(enrolled.map((s) => [s.id, s.name]));
+      // One sticky tracker per connection, clocked at segment-commit granularity.
+      this.tracker = new SpeakerTracker(
+        buildTrackerConfig(this.asnorm, idCfg.acceptThreshold, idCfg.margin),
+      );
+      console.log(
+        `[VADSegmentedTranscriber] ${enrolled.length} enrolled speaker(s) loaded; ` +
+          `${this.asnorm ? 'AS-Norm' : 'degraded'} mode`,
+      );
 
       this.commitSilenceSamples = Math.round(this.cfg.commitSilenceSec * this.sampleRate);
       this.prerollCap = Math.round((this.cfg.prerollMs / 1000) * this.sampleRate);
@@ -868,22 +888,59 @@ export class VADSegmentedTranscriber extends EventEmitter {
     fallbackSamples: number[],
   ): { speaker: string; info: SpeakerMatchInfo } | null {
     if (!this.speakerId) return null;
-    let m;
-    if (windows.length > 0) {
-      m = this.speakerId.identifyMany(windows);
-    } else {
+
+    // Collect the embeddings representing this segment. Prefer the rolling
+    // windows; for a segment too short to have produced any, embed it once.
+    let segWindows = windows;
+    if (segWindows.length === 0) {
       if (fallbackSamples.length < this.sampleRate * 0.5) return null;
-      return this.identifySpeaker(new Float32Array(fallbackSamples));
+      const e = this.embed(new Float32Array(fallbackSamples));
+      if (!e) return null;
+      segWindows = [e];
     }
+
+    // Per-segment open-set decision (also drives unknown-voice clustering and
+    // provides the diagnostic score/reason).
+    const m = this.speakerId.identifyMany(segWindows);
+
+    // Advance the sticky tracker by one segment and let it OWN the final label.
+    // The tracker smooths across segments (score hysteresis + hold), so a single
+    // segment whose score dips can't flip a stable speaker, and a confusable
+    // segment can't steal the label — this is the flicker fix. The tracker is
+    // clocked per committed segment (not per hop) so the closing segment at a
+    // change boundary is always scored on its OWN audio, never the next speaker's.
+    let label = m.speaker;
+    let decision = m.decision;
+    let reason = m.reason;
+    let trackerOverride = false;
+    if (this.tracker) {
+      const scored = this.speakerId.scoreSpeakers(segWindows);
+      const upd = this.tracker.update(scored);
+      if (upd.provisional !== UNKNOWN_SPEAKER) {
+        const name = this.enrolledById.get(upd.provisional);
+        if (name) {
+          const smoothed = !(m.decision === 'known' && m.speaker === name);
+          label = name;
+          decision = 'known';
+          reason = smoothed ? `tracker:${name} (smoothed; segment→${m.speaker})` : `tracker:${name}; ${m.reason}`;
+          trackerOverride = smoothed;
+        }
+      }
+      // Tracker committed UNKNOWN → keep m's (clustered) unknown/guest label.
+    }
+
     return {
-      speaker: m.speaker,
+      speaker: label,
       info: {
-        decision: m.decision,
+        decision,
         score: m.score,
         bestName: m.bestName,
         runnerUpName: m.runnerUpName,
         runnerUpScore: m.runnerUpScore,
-        reason: m.reason,
+        rawScore: m.rawScore,
+        threshold: m.threshold,
+        trackerOverride,
+        reason,
       },
     };
   }
@@ -921,39 +978,6 @@ export class VADSegmentedTranscriber extends EventEmitter {
   }
 
   /**
-   * Extract a speaker embedding for the utterance and run it through the strict
-   * SpeakerIdentifier (cosine + margin + thresholds + unknown clustering).
-   * Returns the chosen label plus diagnostics, or null if no embedding could be
-   * computed (audio too short / extractor not ready).
-   */
-  private identifySpeaker(samples: Float32Array): { speaker: string; info: SpeakerMatchInfo } | null {
-    if (!this.speakerEmbedding || !this.speakerId) return null;
-    try {
-      const stream = this.speakerEmbedding.createStream();
-      stream.acceptWaveform({ sampleRate: this.sampleRate, samples });
-      stream.inputFinished();
-      if (!this.speakerEmbedding.isReady(stream)) return null;
-      const embedding = this.speakerEmbedding.compute(stream);
-      if (!embedding || embedding.length === 0) return null;
-
-      const m = this.speakerId.identify(embedding);
-      return {
-        speaker: m.speaker,
-        info: {
-          decision: m.decision,
-          score: m.score,
-          bestName: m.bestName,
-          runnerUpName: m.runnerUpName,
-          runnerUpScore: m.runnerUpScore,
-          reason: m.reason,
-        },
-      };
-    } catch {
-      return null;
-    }
-  }
-
-  /**
    * Finalize: flush words still being decoded and commit them as a last
    * paragraph. Called when the speaker stops the session.
    */
@@ -971,6 +995,8 @@ export class VADSegmentedTranscriber extends EventEmitter {
     this.leftover = new Float32Array(0);
     this.preroll = [];
     this.resetSegmentState();
+    // New session ⇒ fresh identity tracking (no carry-over of a prior speaker).
+    this.tracker?.reset();
   }
 
   /** Clear all per-segment diarization state (used on finalize). */
@@ -990,6 +1016,9 @@ export class VADSegmentedTranscriber extends EventEmitter {
     this.speakerEmbedding = null;
     this.speakerId = null;
     this.vad = null;
+    this.tracker = null;
+    this.asnorm = null;
+    this.enrolledById.clear();
     this.initialized = false;
     this.removeAllListeners();
   }

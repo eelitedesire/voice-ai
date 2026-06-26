@@ -28,6 +28,14 @@ export interface SpeakerMatchInfo {
   bestName: string;
   runnerUpName?: string;
   runnerUpScore?: number;
+  /** Raw multi-prototype similarity (cosine domain) — separates an embedding
+   *  miss (raw low) from a threshold reject (raw ok) in diagnostics. */
+  rawScore?: number;
+  /** Accept threshold applied to the top speaker. */
+  threshold?: number;
+  /** True when the temporal tracker's committed label overrode the per-segment
+   *  decision (a held identity). */
+  trackerOverride?: boolean;
   reason: string;
 }
 
@@ -70,22 +78,88 @@ export interface PromptTemplate {
 
 // ─── Speakers ─────────────────────────────────────────────────────────
 
+/**
+ * One enrolled voice prototype: a single L2-normalized embedding plus the
+ * metadata needed for quality gating, AS-Norm, and migration auditing.
+ *
+ * The redesign stores a *set* of these per speaker (multi-prototype) rather
+ * than one averaged centroid, so intra-speaker variation is preserved instead
+ * of blurred into a fragile mean.
+ */
+export interface SpeakerPrototype {
+  /** L2-normalized embedding (unit length). */
+  v: number[];
+  /** Embedding dimension, captured from the model at extraction time. */
+  dim: number;
+  /** Seconds of audio this prototype was computed from (0 = unknown/legacy). */
+  durationSec: number;
+  /** 0..1 quality (RMS/SNR/length/self-consistency). 0.5 = legacy/unknown. */
+  qualityScore: number;
+  /** RMS energy of the source window (diagnostic; optional for legacy). */
+  rms?: number;
+  /** Capture time (ms epoch). */
+  timestamp: number;
+  /** Embedding-model identifier this prototype was produced with. */
+  modelVersion: string;
+  /** Optional free-form capture conditions ("close-mic", "phone", …). */
+  conditions?: string;
+  /** Provenance: fresh capture vs synthesized from a legacy raw embedding. */
+  source: 'enrolled' | 'migrated';
+}
+
+/**
+ * Per-speaker derived statistics. `cohort*` are the ENROLLMENT-SIDE AS-Norm
+ * statistics (this speaker's prototypes scored against the imposter cohort),
+ * precomputed so runtime only pays the test-side cost. They are valid ONLY for
+ * the `cohortVersion` they were computed against — see `isCohortStale`.
+ */
+export interface SpeakerStats {
+  /** Mean pairwise cosine among this speaker's prototypes (−1..1). */
+  intraClassTightness: number;
+  /** Enrollment-side AS-Norm mean (speaker prototypes vs cohort). */
+  cohortMean: number;
+  /** Enrollment-side AS-Norm std (speaker prototypes vs cohort). */
+  cohortStd: number;
+  /** Cohort version these stats were computed against. */
+  cohortVersion: string;
+  /** Optional per-speaker accept threshold, derived from tightness. */
+  perSpeakerThreshold?: number;
+}
+
 export interface SpeakerProfile {
   id: string;
   name: string;
   role: string;
-  /** Legacy single embedding. Kept for backward compatibility; new enrolments
-   *  populate `embeddings` and mirror the first one here. */
+  /** Legacy single embedding (RAW). Kept for backward compatibility / rollback;
+   *  new enrolments mirror prototypes[0].v here. */
   voiceprint: number[];
-  /** Multiple L2-normalisable embeddings captured across the enrolment audio
-   *  (and appended on re-enrolment) for stable, condition-robust matching. */
+  /** Legacy multiple RAW embeddings. Kept for rollback; superseded by
+   *  `prototypes` (which are normalized and carry metadata). */
   embeddings?: number[][];
+  /** NEW canonical store: normalized embeddings + per-prototype metadata. */
+  prototypes?: SpeakerPrototype[];
+  /** NEW derived stats (tightness + enrollment-side AS-Norm). */
+  stats?: SpeakerStats;
+  /** Profile schema version, for migration auditing. */
+  schemaVersion?: string;
+  /**
+   * Guided-enrollment lifecycle. `incomplete` until all required conditions
+   * pass and the user finalizes; `complete` after. Absent ⇒ legacy profile,
+   * grandfathered as usable. An `incomplete` profile is NEVER loaded for
+   * matching (see isUsableForMatching), so a half-finished enrollment can't
+   * quietly match.
+   */
+  enrollmentStatus?: 'incomplete' | 'complete';
 }
 
 export interface SpeakerDatabase {
   speakers: SpeakerProfile[];
   modelVersion: string;
   createdAt: number;
+  /** Cohort version the DB's enrollment-side stats target (global default). */
+  cohortVersion?: string;
+  /** Schema version of the database as a whole. */
+  schemaVersion?: string;
 }
 
 // ─── Memory ───────────────────────────────────────────────────────────

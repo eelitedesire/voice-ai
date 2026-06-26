@@ -17,7 +17,24 @@
  *      human-readable reason for confidence visualisation.
  *   5. Online clustering of unknown voices into stable "Guest N" labels within a
  *      session, so distinct unknown speakers are separated (no overlap handling).
+ *
+ * As of the multi-prototype redesign this module operates in TWO modes:
+ *   - AS-Norm mode  (a fresh background cohort + calibration is supplied):
+ *       multi-prototype scoring + Adaptive Symmetric Normalization + calibrated
+ *       open-set threshold + top-1/top-2 margin. This is the production path.
+ *   - Degraded mode (no cohort): multi-prototype raw-cosine with the
+ *       conservative built-in thresholds — the historical behaviour, kept so the
+ *       system still runs (loudly logged) before a cohort exists. Stale or absent
+ *       enrollment-side stats are NEVER used silently: they are recomputed.
  */
+
+import {
+  protoScore,
+  testSideSims,
+  asNormWithPrecomputed,
+  computeEnrollmentSideStats,
+  type AsNormConfig,
+} from './domain/cohort';
 
 // ─── Math helpers (exported for tests) ─────────────────────────────────────
 
@@ -57,10 +74,34 @@ export function centroid(vectors: Float32Array[]): Float32Array {
 export interface EnrolledSpeaker {
   id: string;
   name: string;
-  /** All enrolled samples, L2-normalised. */
+  /** All enrolled prototypes, L2-normalised. The multi-prototype match set. */
   embeddings: Float32Array[];
-  /** Re-normalised mean of `embeddings` — the primary comparison vector. */
+  /** Re-normalised mean of `embeddings` — kept for the degraded-mode fallback. */
   centroid: Float32Array;
+  /** Mean pairwise cosine among prototypes (from SpeakerStats), if known. */
+  tightness?: number;
+  /** Precomputed enrollment-side AS-Norm stats; recomputed if stale/absent. */
+  enrollStats?: { cohortMean: number; cohortStd: number; cohortVersion: string };
+}
+
+/**
+ * Everything the identifier needs to run AS-Norm. Assembled (in Stage 5) from
+ * models/cohort.json + models/calibration.json. Passing this switches the
+ * identifier from degraded cosine into calibrated open-set AS-Norm.
+ */
+export interface AsNormContext {
+  /** L2-normalised background imposter embeddings. */
+  cohort: number[][];
+  cohortVersion: string;
+  modelVersion: string;
+  protoK: number;
+  cohortK: number;
+  /** Global accept threshold on the AS-Norm score (calibrated at a low FAR). */
+  threshold: number;
+  /** Required top-1 vs top-2 AS-Norm margin. */
+  margin: number;
+  /** Optional per-speaker thresholds (keyed by speaker id). */
+  perSpeakerThresholds?: Record<string, number>;
 }
 
 export type SpeakerDecision = 'known' | 'uncertain' | 'unknown';
@@ -76,6 +117,10 @@ export interface SpeakerMatch {
   /** Runner-up enrolled speaker, for the margin/confusion check. */
   runnerUpName?: string;
   runnerUpScore?: number;
+  /** Raw multi-prototype similarity to the best speaker (cosine domain). */
+  rawScore?: number;
+  /** Accept threshold applied to the top speaker (per-speaker or global). */
+  threshold?: number;
   /** Human-readable explanation for confidence visualisation. */
   reason: string;
 }
@@ -130,26 +175,101 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): SpeakerIden
  * embeddings have the wrong dimension or are empty are skipped.
  */
 export function buildEnrolledSpeakers(
-  profiles: Array<{ id: string; name?: string; role?: string; voiceprint?: number[]; embeddings?: number[][] }>,
+  profiles: Array<{
+    id: string;
+    name?: string;
+    role?: string;
+    voiceprint?: number[];
+    embeddings?: number[][];
+    prototypes?: Array<{ v: number[] }>;
+    stats?: {
+      intraClassTightness?: number;
+      cohortMean?: number;
+      cohortStd?: number;
+      cohortVersion?: string;
+    };
+    enrollmentStatus?: 'incomplete' | 'complete';
+  }>,
 ): EnrolledSpeaker[] {
   const out: EnrolledSpeaker[] = [];
   for (const p of profiles) {
-    const raw: number[][] = [];
-    if (Array.isArray(p.embeddings) && p.embeddings.length > 0) {
-      for (const e of p.embeddings) if (Array.isArray(e) && e.length) raw.push(e);
-    } else if (Array.isArray(p.voiceprint) && p.voiceprint.length) {
-      raw.push(p.voiceprint);
+    // Never load a half-finished guided enrollment into the live match set.
+    // Legacy profiles (no status) are grandfathered as usable.
+    if (p.enrollmentStatus === 'incomplete') continue;
+
+    let embeddings: Float32Array[];
+    let tightness: number | undefined;
+    let enrollStats: EnrolledSpeaker['enrollStats'];
+
+    if (Array.isArray(p.prototypes) && p.prototypes.length > 0) {
+      // New multi-prototype schema (prototypes are already normalised, but we
+      // re-normalise defensively so a hand-edited DB can't corrupt scoring).
+      embeddings = p.prototypes
+        .filter((pr) => Array.isArray(pr.v) && pr.v.length)
+        .map((pr) => l2normalize(pr.v));
+      if (p.stats) {
+        tightness = p.stats.intraClassTightness;
+        // Only carry enrollment-side stats that are real and version-stamped;
+        // the `none` sentinel (or a missing version) stays undefined so AS-Norm
+        // recomputes rather than trusting stale numbers.
+        if (
+          p.stats.cohortVersion &&
+          p.stats.cohortVersion !== 'none' &&
+          Number.isFinite(p.stats.cohortStd) &&
+          (p.stats.cohortStd ?? 0) > 0
+        ) {
+          enrollStats = {
+            cohortMean: p.stats.cohortMean ?? 0,
+            cohortStd: p.stats.cohortStd as number,
+            cohortVersion: p.stats.cohortVersion,
+          };
+        }
+      }
+    } else {
+      // Legacy: raw `embeddings` or single `voiceprint`.
+      const raw: number[][] = [];
+      if (Array.isArray(p.embeddings) && p.embeddings.length > 0) {
+        for (const e of p.embeddings) if (Array.isArray(e) && e.length) raw.push(e);
+      } else if (Array.isArray(p.voiceprint) && p.voiceprint.length) {
+        raw.push(p.voiceprint);
+      }
+      if (raw.length === 0) continue;
+      embeddings = raw.map((e) => l2normalize(e));
     }
-    if (raw.length === 0) continue;
-    const embeddings = raw.map((e) => l2normalize(e));
+
+    if (embeddings.length === 0) continue;
     out.push({
       id: p.id,
       name: p.name || p.role || p.id,
       embeddings,
       centroid: centroid(embeddings),
+      tightness,
+      enrollStats,
     });
   }
   return out;
+}
+
+/** Per-speaker score row produced by the scoring primitive. */
+export interface ScoredSpeaker {
+  id: string;
+  name: string;
+  /** Decision score: AS-Norm normalized in AS-Norm mode, raw cosine in degraded. */
+  score: number;
+  /** Underlying raw multi-prototype similarity (cosine domain), for diagnostics. */
+  raw?: number;
+}
+
+/** Windows aggregated by the trimmed mean of the top-M most speaker-like ones. */
+const TOP_M = 3;
+/** Prototypes aggregated per window in degraded (no-cohort) mode. */
+const DEGRADED_PROTO_K = 3;
+
+const _warnedKeys = new Set<string>();
+function warnOnce(key: string, msg: string): void {
+  if (_warnedKeys.has(key)) return;
+  _warnedKeys.add(key);
+  console.warn(msg);
 }
 
 interface UnknownCluster {
@@ -166,87 +286,192 @@ interface UnknownCluster {
 export class SpeakerIdentifier {
   private readonly speakers: EnrolledSpeaker[];
   private readonly cfg: SpeakerIdentifierConfig;
+  private readonly ctx: AsNormContext | null;
+  private readonly asnormCfg: AsNormConfig;
   private readonly unknownClusters: UnknownCluster[] = [];
   private unknownCount = 0;
 
-  constructor(speakers: EnrolledSpeaker[], cfg: Partial<SpeakerIdentifierConfig> = {}) {
+  constructor(
+    speakers: EnrolledSpeaker[],
+    cfg: Partial<SpeakerIdentifierConfig> = {},
+    asnorm: AsNormContext | null = null,
+  ) {
     this.speakers = speakers;
     this.cfg = { ...DEFAULT_CONFIG, ...cfg };
+    this.ctx = asnorm;
+    this.asnormCfg = asnorm
+      ? { protoK: asnorm.protoK, cohortK: asnorm.cohortK }
+      : { protoK: DEGRADED_PROTO_K, cohortK: 100 };
+
+    if (this.ctx && this.ctx.cohort.length > 0) {
+      // Guarantee every speaker has FRESH enrollment-side stats for THIS cohort.
+      // Absent or version-mismatched stats are recomputed (and logged) — they are
+      // never trusted silently. This is the cohort-versioning hard requirement.
+      for (const s of this.speakers) {
+        const fresh =
+          s.enrollStats &&
+          s.enrollStats.cohortVersion === this.ctx.cohortVersion &&
+          s.enrollStats.cohortStd > 0;
+        if (!fresh) {
+          const { cohortMean, cohortStd } = computeEnrollmentSideStats(
+            s.embeddings,
+            this.ctx.cohort,
+            this.asnormCfg,
+          );
+          s.enrollStats = { cohortMean, cohortStd, cohortVersion: this.ctx.cohortVersion };
+          warnOnce(
+            `asnorm-recompute:${s.id}:${this.ctx.cohortVersion}`,
+            `[SpeakerIdentifier] Recomputed AS-Norm stats for "${s.name}" ` +
+              `(profile stats absent or stale vs cohort ${this.ctx.cohortVersion}).`,
+          );
+        }
+      }
+    } else if (!this.ctx) {
+      warnOnce(
+        'asnorm-degraded',
+        '[SpeakerIdentifier] No AS-Norm cohort supplied — running in degraded ' +
+          'multi-prototype cosine mode (calibrated open-set disabled).',
+      );
+    }
   }
 
   get enrolledCount(): number {
     return this.speakers.length;
   }
 
-  /**
-   * Identify a single raw (un-normalised) embedding. Pure w.r.t. enrolled
-   * speakers; mutates only the session-local unknown clusters.
-   */
-  identify(rawEmbedding: ArrayLike<number>): SpeakerMatch {
-    const emb = l2normalize(rawEmbedding);
-
-    if (this.speakers.length === 0) {
-      // No enrolment → everything is an (optionally clustered) unknown voice.
-      return this.asUnknown(emb, 0, '', 'no speakers enrolled');
-    }
-
-    // Score every enrolled speaker by centroid similarity (stable), keeping the
-    // best per-sample similarity as a secondary signal.
-    const scored = this.speakers
-      .map((s) => ({
-        name: s.name,
-        score: cosineNormalized(emb, s.centroid),
-        best: maxCosine(emb, s.embeddings),
-      }))
-      .sort((a, b) => b.score - a.score);
-
-    return this.decide(scored, emb);
+  /** True when calibrated AS-Norm scoring is active. */
+  asnormActive(): boolean {
+    return !!this.ctx && this.ctx.cohort.length > 0 && this.speakers.length > 0;
   }
 
   /**
-   * Identify a speaker from MANY embeddings sampled across one segment (the
-   * rolling 1.5s windows). Aggregating per-window similarities is far more
-   * robust than embedding the whole segment once: a 5s turn yields ~8 windows,
-   * so a couple of noisy windows (onset, breath, room noise) no longer drag the
-   * score below threshold and cause a false "Unknown". For each enrolled speaker
-   * we take the trimmed mean of its top-`m` window similarities.
+   * Identify a single raw (un-normalised) embedding — the one-window case of
+   * `identifyMany`, kept as a stable public entry point.
+   */
+  identify(rawEmbedding: ArrayLike<number>): SpeakerMatch {
+    return this.identifyMany([rawEmbedding]);
+  }
+
+  /**
+   * Identify a speaker from one or many embeddings sampled across a segment (the
+   * rolling windows). This is the single scoring primitive. Aggregating per-window
+   * scores is robust to a few noisy windows (onset, breath, room noise) that would
+   * otherwise drag a single blended embedding below threshold. In AS-Norm mode each
+   * window is fully normalised before aggregation; in degraded mode windows are
+   * scored by multi-prototype cosine.
    */
   identifyMany(rawEmbeddings: ArrayLike<number>[]): SpeakerMatch {
     const embs = rawEmbeddings.map((e) => l2normalize(e)).filter((e) => e.length > 0);
     if (embs.length === 0) {
       return { speaker: this.cfg.unknownLabel, decision: 'unknown', score: 0, bestName: '', reason: 'no audio for speaker id' };
     }
-    if (embs.length === 1) return this.identify(rawEmbeddings[0]);
 
     const meanEmb = centroid(embs); // representative vector for unknown clustering
-
     if (this.speakers.length === 0) {
       return this.asUnknown(meanEmb, 0, '', 'no speakers enrolled');
     }
 
-    const TOP_M = 3;
-    const scored = this.speakers
-      .map((s) => {
-        const centroidSims = embs.map((e) => cosineNormalized(e, s.centroid));
-        const bestSims = embs.map((e) => maxCosine(e, s.embeddings));
-        return {
-          name: s.name,
-          score: trimmedTopMean(centroidSims, TOP_M),
-          best: trimmedTopMean(bestSims, TOP_M),
-        };
-      })
-      .sort((a, b) => b.score - a.score);
-
-    return this.decide(scored, meanEmb, embs.length);
+    const scored = this.scoreSpeakers(embs);
+    return this.asnormActive()
+      ? this.decideOpenSet(scored, meanEmb, embs.length)
+      : this.decide(scored, meanEmb, embs.length);
   }
 
   /**
-   * Apply the strict accept / uncertain / unknown decision to a ranked list of
-   * enrolled-speaker scores. `embForCluster` seeds unknown clustering; `nWindows`
-   * (if >1) is noted in the reason for diagnostics.
+   * Per-speaker scores for the given windows, sorted best-first, in the active
+   * mode. Exposed so the temporal tracker (Stage 4) can score one rolling
+   * embedding per hop and smooth the result over time.
+   */
+  scoreSpeakers(embs: Float32Array[]): ScoredSpeaker[] {
+    const list = this.speakers.map((s) => {
+      if (this.asnormActive()) {
+        const { asnorm, raw } = this.asnormSpeakerScore(s, embs);
+        return { id: s.id, name: s.name, score: asnorm, raw };
+      }
+      // Degraded mode: the score IS the raw multi-prototype cosine.
+      const raw = trimmedTopMean(
+        embs.map((w) => protoScore(w, s.embeddings, this.asnormCfg.protoK)),
+        TOP_M,
+      );
+      return { id: s.id, name: s.name, score: raw, raw };
+    });
+    return list.sort((a, b) => b.score - a.score);
+  }
+
+  /**
+   * AS-Norm score for one speaker over a set of windows (trimmed top-m). Returns
+   * both the normalized score AND the underlying raw similarity, so diagnostics
+   * can separate an embedding miss (raw low) from a threshold reject (raw ok).
+   */
+  private asnormSpeakerScore(s: EnrolledSpeaker, embs: Float32Array[]): { asnorm: number; raw: number } {
+    const cohort = this.ctx!.cohort;
+    const m = s.enrollStats!;
+    const rawPer = embs.map((w) => protoScore(w, s.embeddings, this.asnormCfg.protoK));
+    const perWindow = embs.map((w, i) =>
+      asNormWithPrecomputed(rawPer[i], testSideSims(w, cohort), m.cohortMean, m.cohortStd, this.asnormCfg),
+    );
+    return { asnorm: trimmedTopMean(perWindow, TOP_M), raw: trimmedTopMean(rawPer, TOP_M) };
+  }
+
+  /**
+   * Calibrated open-set decision (AS-Norm mode). Accept the top speaker only if
+   * its normalised score clears the (per-speaker) threshold AND beats the
+   * runner-up by the required margin; otherwise the voice is unknown.
+   */
+  private decideOpenSet(
+    scored: ScoredSpeaker[],
+    embForCluster: Float32Array,
+    nWindows: number,
+  ): SpeakerMatch {
+    const top = scored[0];
+    const runner = scored[1];
+    const thr = this.ctx!.perSpeakerThresholds?.[top.id] ?? this.ctx!.threshold;
+    const margin = runner ? top.score - runner.score : Infinity;
+    const suffix = nWindows > 1 ? ` over ${nWindows} windows` : '';
+    const base = {
+      score: top.score,
+      bestName: top.name,
+      runnerUpName: runner?.name,
+      runnerUpScore: runner?.score,
+      rawScore: top.raw,
+      threshold: thr,
+    };
+
+    if (top.score < thr) {
+      return this.asUnknown(
+        embForCluster,
+        top.score,
+        top.name,
+        `AS-Norm ${fmt(top.score)} < threshold ${fmt(thr)} for ${top.name}${suffix}`,
+        base,
+      );
+    }
+    if (margin < this.ctx!.margin) {
+      return this.asUnknown(
+        embForCluster,
+        top.score,
+        top.name,
+        `AS-Norm margin ${fmt(margin)} < ${fmt(this.ctx!.margin)} ` +
+          `(${top.name} vs ${runner?.name}) — confusable${suffix}`,
+        base,
+        'uncertain',
+      );
+    }
+    return {
+      speaker: top.name,
+      decision: 'known',
+      reason: `AS-Norm accept ${fmt(top.score)} ≥ ${fmt(thr)}, margin ${fmt(margin)}${suffix}`,
+      ...base,
+    };
+  }
+
+  /**
+   * Degraded-mode decision: multi-prototype raw cosine against the built-in
+   * conservative thresholds. Identical policy to the historical implementation,
+   * used whenever no AS-Norm cohort is available.
    */
   private decide(
-    scored: { name: string; score: number; best: number }[],
+    scored: ScoredSpeaker[],
     embForCluster: Float32Array,
     nWindows = 1,
   ): SpeakerMatch {
@@ -261,6 +486,8 @@ export class SpeakerIdentifier {
       bestName: top.name,
       runnerUpName: runner?.name,
       runnerUpScore: runner?.score,
+      rawScore: top.raw ?? score,
+      threshold: this.cfg.acceptThreshold,
     };
 
     // Below the uncertain floor → genuinely unknown.
@@ -363,15 +590,6 @@ export class SpeakerIdentifier {
     this.unknownClusters.push({ label, centroid: emb, count: 1 });
     return label;
   }
-}
-
-function maxCosine(emb: Float32Array, embeddings: Float32Array[]): number {
-  let m = -Infinity;
-  for (const e of embeddings) {
-    const s = cosineNormalized(emb, e);
-    if (s > m) m = s;
-  }
-  return m === -Infinity ? 0 : m;
 }
 
 /**

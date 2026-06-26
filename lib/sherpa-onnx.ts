@@ -1,8 +1,82 @@
 import * as sherpa from 'sherpa-onnx-node';
-import { SpeakerDatabase, SpeakerProfile } from '@/types';
-import { SpeakerIdentifier, buildEnrolledSpeakers, configFromEnv } from './speaker-identification';
+import { SpeakerDatabase, SpeakerProfile, SpeakerPrototype } from '@/types';
+import {
+  SpeakerIdentifier,
+  buildEnrolledSpeakers,
+  configFromEnv,
+  l2normalize,
+  centroid,
+} from './speaker-identification';
+import { computeIntraClassTightness } from './domain/speaker-profile';
+import {
+  REQUIRED_CONDITIONS,
+  gateRecording,
+  validateEnergySeparation,
+  assessCoverage,
+  assessConfusable,
+  conditionsPresent,
+  computeEnrollmentStatus,
+  meanRmsForCondition,
+  replaceConditionPrototypes,
+  type RecordingMetrics,
+  type EnrollmentCondition,
+  type CoverageWarning,
+} from './domain/enrollment';
+import { EMBEDDING_MODEL_ID } from './embedding-config';
 import * as fs from 'fs';
 import * as path from 'path';
+
+// ─── Enrollment audio metrics (pure-ish signal helpers) ─────────────────────
+
+/** Root-mean-square of a sample buffer. */
+function bufferRms(samples: Float32Array): number {
+  if (samples.length === 0) return 0;
+  let sum = 0;
+  for (let i = 0; i < samples.length; i++) sum += samples[i] * samples[i];
+  return Math.sqrt(sum / samples.length);
+}
+
+/** Fraction of samples at/near full scale (clipping indicator). */
+function clippingFraction(samples: Float32Array): number {
+  if (samples.length === 0) return 0;
+  let clipped = 0;
+  for (let i = 0; i < samples.length; i++) if (Math.abs(samples[i]) >= 0.99) clipped++;
+  return clipped / samples.length;
+}
+
+/** Quality score 0..1 from SNR, clipping and how full the analysis window is. */
+function windowQuality(snrDb: number, clipFrac: number, windowSec: number, fullWindowSec: number): number {
+  const snrScore = Math.max(0, Math.min(1, (snrDb - 5) / 25)); // 5 dB→0, 30 dB→1
+  const clipScore = Math.max(0, 1 - clipFrac / 0.02); // 2% clipping→0
+  const lenScore = Math.max(0, Math.min(1, windowSec / fullWindowSec));
+  return Math.max(0, Math.min(1, 0.6 * snrScore + 0.25 * clipScore + 0.15 * lenScore));
+}
+
+/** Result of extracting prototypes from one labeled condition recording. */
+export interface ConditionExtraction {
+  prototypes: SpeakerPrototype[];
+  metrics: RecordingMetrics;
+}
+
+/** Outcome of enrolling one condition recording. */
+export interface EnrollConditionResult {
+  accepted: boolean;
+  condition: EnrollmentCondition;
+  reason?: string;
+  prototypesAdded?: number;
+  conditionsPresent?: string[];
+  status?: 'incomplete' | 'complete';
+}
+
+/** Outcome of finalizing a speaker's enrollment. */
+export interface FinalizeEnrollmentResult {
+  finalized: boolean;
+  status?: 'incomplete' | 'complete';
+  missing?: string[];
+  tightness?: number;
+  warnings?: CoverageWarning[];
+  reason?: string;
+}
 
 export class VADManager {
   private vad: any = null;
@@ -352,84 +426,225 @@ export class SherpaONNXManager {
     }
   }
 
+  // ─── Guided multi-condition enrollment (writes the new prototype schema) ───
+
   /**
-   * Extract MULTIPLE speaker embeddings from one enrolment recording by sliding
-   * a window across it. Capturing several embeddings (rather than one) makes the
-   * enrolled profile robust to intra-speaker variation (pitch, pacing, position).
+   * Extract prototypes from ONE labeled condition recording. VAD-gates the clip
+   * (silence/non-speech excluded), slides 3 s / 1.5 s windows within voiced
+   * regions, embeds + normalizes each, and tags every prototype with this
+   * recording's `condition`, quality, duration and RMS. Also returns the
+   * recording-level metrics the pure gating/energy checks consume.
+   *
+   * Replaces the old `extractEnrollmentEmbeddings` (whole-clip slicing, no VAD,
+   * no quality) — that method is retained only until the route is reshaped.
    */
-  async extractEnrollmentEmbeddings(audioPath: string): Promise<number[][]> {
-    const wave = sherpa.readWave(audioPath);
-    if (!wave || !wave.samples) {
-      throw new Error(`Failed to read audio file: ${audioPath}`);
+  async extractConditionPrototypes(
+    audioPath: string,
+    condition: EnrollmentCondition,
+  ): Promise<ConditionExtraction> {
+    if (!this.speakerEmbedding) {
+      throw new Error('Speaker embedding model not initialized');
     }
+    const wave = sherpa.readWave(audioPath);
+    if (!wave || !wave.samples) throw new Error(`Failed to read audio file: ${audioPath}`);
     const samples: Float32Array =
       wave.samples instanceof Float32Array ? wave.samples : new Float32Array(wave.samples);
-    const sr = wave.sampleRate;
+    const sr: number = wave.sampleRate;
 
-    const win = Math.floor(3.0 * sr); // 3s analysis windows
-    const hop = Math.floor(1.5 * sr); // 50% overlap
+    // VAD: voiced segments [start,end] in seconds.
+    const vad = new VADManager(this.modelPath);
+    await vad.initialize();
+    const segments = await vad.getSpeechSegments(audioPath);
+    vad.cleanup();
 
-    const embeddings: number[][] = [];
-    if (samples.length <= win) {
-      embeddings.push(await this.extractVoiceprintFromSamples(samples, sr));
-    } else {
-      for (let off = 0; off + win <= samples.length; off += hop) {
+    // Noise floor: RMS over the NON-voiced span (for SNR). Build a voiced mask.
+    const voicedMask = new Uint8Array(samples.length);
+    let voicedCount = 0;
+    for (const [s, e] of segments) {
+      const a = Math.max(0, Math.floor(s * sr));
+      const b = Math.min(samples.length, Math.floor(e * sr));
+      for (let i = a; i < b; i++) {
+        if (!voicedMask[i]) voicedCount++;
+        voicedMask[i] = 1;
+      }
+    }
+    let voicedSumSq = 0;
+    let noiseSumSq = 0;
+    let noiseCount = 0;
+    for (let i = 0; i < samples.length; i++) {
+      const sq = samples[i] * samples[i];
+      if (voicedMask[i]) voicedSumSq += sq;
+      else {
+        noiseSumSq += sq;
+        noiseCount++;
+      }
+    }
+    const voicedRms = voicedCount > 0 ? Math.sqrt(voicedSumSq / voicedCount) : 0;
+    const noiseRms = noiseCount > 0 ? Math.sqrt(noiseSumSq / noiseCount) : 1e-6;
+    const snrDb = 20 * Math.log10(Math.max(voicedRms, 1e-9) / Math.max(noiseRms, 1e-9));
+    const voicedSec = voicedCount / sr;
+    const clipFrac = clippingFraction(samples);
+
+    const metrics: RecordingMetrics = {
+      condition,
+      voicedSec,
+      snrDb,
+      clippingFraction: clipFrac,
+      rms: voicedRms,
+    };
+
+    // Slide windows WITHIN each voiced segment; reject low-quality windows.
+    const fullWindowSec = 3.0;
+    const win = Math.floor(fullWindowSec * sr);
+    const hop = Math.floor(1.5 * sr);
+    const now = Date.now();
+    const prototypes: SpeakerPrototype[] = [];
+
+    for (const [segStart, segEnd] of segments) {
+      const a = Math.max(0, Math.floor(segStart * sr));
+      const b = Math.min(samples.length, Math.floor(segEnd * sr));
+      if (b - a < Math.floor(1.0 * sr)) continue; // skip < 1 s voiced fragments
+
+      const starts: number[] = [];
+      for (let off = a; off + win <= b; off += hop) starts.push(off);
+      // Always include a tail window so the segment end isn't lost.
+      if (b - a >= win) starts.push(b - win);
+      else starts.push(a); // short segment: one window of whatever voiced audio exists
+
+      for (const start of Array.from(new Set(starts))) {
+        const end = Math.min(b, start + win);
+        const winSamples = samples.subarray(start, end);
+        const winSec = winSamples.length / sr;
         try {
-          embeddings.push(
-            await this.extractVoiceprintFromSamples(samples.subarray(off, off + win), sr),
-          );
+          const raw = await this.extractVoiceprintFromSamples(winSamples, sr);
+          const v = Array.from(l2normalize(raw));
+          const wq = windowQuality(snrDb, clippingFraction(winSamples), winSec, fullWindowSec);
+          if (wq < 0.25) continue; // drop poor windows
+          prototypes.push({
+            v,
+            dim: v.length,
+            durationSec: winSec,
+            qualityScore: wq,
+            rms: bufferRms(winSamples),
+            timestamp: now,
+            modelVersion: EMBEDDING_MODEL_ID,
+            conditions: condition,
+            source: 'enrolled',
+          });
         } catch {
-          // skip a bad window; others still contribute
+          // skip a window that failed to embed
         }
       }
-      // Always include the final window so the tail isn't lost.
-      const tail = samples.subarray(Math.max(0, samples.length - win));
-      try {
-        embeddings.push(await this.extractVoiceprintFromSamples(tail, sr));
-      } catch {
-        // ignore
-      }
     }
 
-    if (embeddings.length === 0) {
-      // Fallback: whole clip as a single embedding.
-      embeddings.push(await this.extractVoiceprintFromSamples(samples, sr));
-    }
-    console.log(`Enrolment: extracted ${embeddings.length} embedding(s) from ${audioPath}`);
-    return embeddings;
+    return { prototypes, metrics };
   }
 
-  async enrollSpeaker(
+  /**
+   * Enroll ONE labeled condition recording. Gates the recording on its own
+   * merits, then validates its energy against the stored `normal` sample
+   * (loud/soft must actually differ). On success, appends the prototypes to the
+   * profile in the NEW schema, recomputes tightness, and marks the profile
+   * `incomplete` (it cannot go live until finalize). On failure, the DB is
+   * untouched and a redo reason for THIS condition is returned — passed
+   * recordings are preserved.
+   */
+  async enrollCondition(
     speakerId: string,
     name: string,
-    audioPath: string
-  ): Promise<void> {
-    if (!this.speakerDatabase) {
-      throw new Error('Speaker database not loaded');
+    audioPath: string,
+    condition: EnrollmentCondition,
+  ): Promise<EnrollConditionResult> {
+    if (!this.speakerDatabase) throw new Error('Speaker database not loaded');
+
+    const { prototypes, metrics } = await this.extractConditionPrototypes(audioPath, condition);
+    if (prototypes.length === 0) {
+      return { accepted: false, condition, reason: 'No usable speech found in this recording — redo it.' };
     }
 
-    const newEmbeddings = await this.extractEnrollmentEmbeddings(audioPath);
+    const gate = gateRecording(metrics);
+    if (!gate.ok) return { accepted: false, condition, reason: gate.reason };
 
     const existing = this.speakerDatabase.speakers.find((s) => s.id === speakerId);
-    if (existing) {
-      // Re-enrolment APPENDS samples (capture different conditions over time)
-      // rather than overwriting the profile.
-      const prior = existing.embeddings
-        ?? (existing.voiceprint?.length ? [existing.voiceprint] : []);
-      existing.embeddings = [...prior, ...newEmbeddings];
-      existing.voiceprint = existing.embeddings[0]; // legacy mirror
-      existing.name = name;
-      existing.role = name;
-    } else {
-      const profile: SpeakerProfile = {
-        id: speakerId,
-        name,
-        role: name,
-        voiceprint: newEmbeddings[0],
-        embeddings: newEmbeddings,
-      };
-      this.speakerDatabase.speakers.push(profile);
+    const normalRms = existing?.prototypes
+      ? meanRmsForCondition(existing.prototypes, 'normal')
+      : null;
+    const energy = validateEnergySeparation(condition, metrics.rms, normalRms);
+    if (!energy.ok) return { accepted: false, condition, reason: energy.reason };
+
+    const profile: SpeakerProfile =
+      existing ?? { id: speakerId, name, role: name, voiceprint: [], prototypes: [] };
+    // Replace (not stack) any prior prototypes for this condition, then cap.
+    profile.prototypes = replaceConditionPrototypes(profile.prototypes ?? [], prototypes, condition);
+    profile.voiceprint = profile.prototypes[0].v; // legacy mirror (field is required)
+    profile.name = name;
+    profile.role = name;
+    profile.schemaVersion = '2.0.0-multiproto';
+    profile.stats = {
+      ...(profile.stats ?? { cohortMean: 0, cohortStd: 0, cohortVersion: 'none' }),
+      intraClassTightness: computeIntraClassTightness(profile.prototypes),
+      cohortMean: 0,
+      cohortStd: 0,
+      cohortVersion: 'none', // AS-Norm recomputes enroll-side stats at load
+    };
+    profile.enrollmentStatus = 'incomplete';
+    if (!existing) this.speakerDatabase.speakers.push(profile);
+
+    const present = conditionsPresent(profile.prototypes);
+    return {
+      accepted: true,
+      condition,
+      prototypesAdded: prototypes.length,
+      conditionsPresent: present,
+      status: 'incomplete',
+    };
+  }
+
+  /**
+   * Finalize a speaker's enrollment: require all conditions present, then run
+   * the inverted coverage/tightness assessment + confusable-pair check and mark
+   * the profile `complete` (so it becomes eligible for live matching). Warnings
+   * are advisory; only missing conditions block completion.
+   */
+  async finalizeEnrollment(speakerId: string): Promise<FinalizeEnrollmentResult> {
+    if (!this.speakerDatabase) throw new Error('Speaker database not loaded');
+    const profile = this.speakerDatabase.speakers.find((s) => s.id === speakerId);
+    if (!profile || !profile.prototypes || profile.prototypes.length === 0) {
+      return { finalized: false, reason: 'Speaker has no recordings.' };
     }
+
+    const present = conditionsPresent(profile.prototypes);
+    const status = computeEnrollmentStatus({ conditionsPresent: present, finalized: true });
+    if (status !== 'complete') {
+      const missing = REQUIRED_CONDITIONS.filter((c) => !present.includes(c));
+      return { finalized: false, status: 'incomplete', missing, reason: `Missing condition(s): ${missing.join(', ')}.` };
+    }
+
+    const tightness = computeIntraClassTightness(profile.prototypes);
+    const warnings = assessCoverage({ tightness, conditionsPresent: present });
+
+    // Confusable check vs other COMPLETE (or legacy) speakers with prototypes.
+    const candidateCentroid = Array.from(
+      centroid(profile.prototypes.map((p) => l2normalize(p.v))),
+    );
+    const others = this.speakerDatabase.speakers
+      .filter((s) => s.id !== speakerId && s.enrollmentStatus !== 'incomplete' && s.prototypes?.length)
+      .map((s) => ({
+        id: s.id,
+        name: s.name,
+        centroid: Array.from(centroid(s.prototypes!.map((p) => l2normalize(p.v)))),
+      }));
+    warnings.push(
+      ...assessConfusable({ candidate: { id: speakerId, name: profile.name, centroid: candidateCentroid }, others }),
+    );
+
+    profile.stats = {
+      ...(profile.stats ?? { cohortMean: 0, cohortStd: 0, cohortVersion: 'none' }),
+      intraClassTightness: tightness,
+    };
+    profile.enrollmentStatus = 'complete';
+
+    return { finalized: true, status: 'complete', tightness, warnings };
   }
 
   /**

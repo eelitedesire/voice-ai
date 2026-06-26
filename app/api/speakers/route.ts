@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { SpeakerDatabase } from '@/types';
+import { conditionsPresent, REQUIRED_CONDITIONS } from '@/lib/domain/enrollment';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -17,11 +18,20 @@ export async function GET() {
     // Return speakers without embedding data (large and not needed by the UI),
     // but include how many voice samples are enrolled per speaker so the UI can
     // encourage capturing more conditions for reliable identification.
-    const speakers = db.speakers.map(s => ({
-      id: s.id,
-      name: s.name || s.role,
-      sampleCount: s.embeddings?.length ?? (s.voiceprint?.length ? 1 : 0),
-    }));
+    const speakers = db.speakers.map(s => {
+      const conditions = conditionsPresent(s.prototypes ?? []);
+      // Legacy profiles (no status, no prototypes) are grandfathered as complete.
+      const enrollmentStatus = s.enrollmentStatus ?? 'complete';
+      const remainingConditions = REQUIRED_CONDITIONS.filter(c => !conditions.includes(c));
+      return {
+        id: s.id,
+        name: s.name || s.role,
+        sampleCount: s.prototypes?.length ?? s.embeddings?.length ?? (s.voiceprint?.length ? 1 : 0),
+        enrollmentStatus,
+        conditions,
+        remainingConditions,
+      };
+    });
 
     return NextResponse.json({ speakers });
   } catch (error) {

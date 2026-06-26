@@ -81,6 +81,11 @@ export function convertBlobToWav(blob: Blob): Promise<ArrayBuffer> {
 }
 
 import { SpeakerMatchInfo } from '@/types';
+import {
+  liveCaptureConstraints,
+  verifyConstraints,
+  formatReadback,
+} from '@/lib/audio-constraints';
 
 export type StreamingAudioEvent =
   | { type: 'transcript_partial'; text: string; timestamp: number }
@@ -123,13 +128,11 @@ export class StreamingAudioCapture {
         latencyHint: 'interactive',
       });
 
+      // Match enrollment's range-preserving config by default (AGC/NS off);
+      // configurable via NEXT_PUBLIC_LIVE_* for noisy rooms.
+      const liveConstraints = liveCaptureConstraints();
       const micPromise = navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
+        audio: liveConstraints,
       });
       const workletPromise = this.audioContext.audioWorklet.addModule(
         '/audio-worklet-processor.js',
@@ -145,6 +148,20 @@ export class StreamingAudioCapture {
         resumePromise,
       ]);
       this.mediaStream = mediaStream;
+
+      // Verify the browser actually applied the constraints (it can ignore them).
+      const track = mediaStream.getAudioTracks()[0];
+      if (track) {
+        const readback = verifyConstraints(track, liveConstraints);
+        console.log('[LiveCapture] getUserMedia readback —', formatReadback(readback));
+        if (!readback.rangePreserved) {
+          console.warn(
+            '[LiveCapture] AGC/NS not confirmed disabled; live capture may differ ' +
+              'from enrollment conditions.',
+            readback.settings,
+          );
+        }
+      }
 
       const source = this.audioContext.createMediaStreamSource(this.mediaStream);
       this.workletNode = new AudioWorkletNode(this.audioContext, 'pcm-processor');

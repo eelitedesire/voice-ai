@@ -17,6 +17,32 @@ export class AudioRecorder {
   };
 
   /**
+   * Record a single clip to `outputPath` (WAV, 16 kHz mono) for `durationSec`,
+   * using whichever recorder is installed. Used by the guided multi-condition CLI.
+   */
+  async recordClip(outputPath: string, durationSec: number): Promise<void> {
+    const hasSox = await this.checkSoxAvailable();
+    const hasFFmpeg = hasSox ? false : await this.checkFFmpegAvailable();
+    if (!hasSox && !hasFFmpeg) {
+      throw new Error('No recording tool found. Install SoX (rec) or FFmpeg.');
+    }
+    const { sampleRate, channels } = this.defaultOptions;
+    if (hasSox) {
+      await this.recordWithSox(outputPath, durationSec, sampleRate, channels);
+    } else {
+      await this.recordWithFFmpeg(outputPath, durationSec, sampleRate, channels);
+    }
+  }
+
+  /** Public prompt helpers for CLI scripts. */
+  async ask(question: string): Promise<string> {
+    return this.prompt(question);
+  }
+  async waitEnter(message: string): Promise<void> {
+    return this.waitForEnter(message);
+  }
+
+  /**
    * Check if SoX (rec command) is available
    */
   async checkSoxAvailable(): Promise<boolean> {
