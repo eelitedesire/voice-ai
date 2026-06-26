@@ -24,7 +24,7 @@ export function PendingBubble({ text }: PendingBubbleProps) {
         />
       </div>
       <div className="flex-1 max-w-[85%]">
-        <div className="px-4 py-3 rounded-2xl bg-gray-100/80 dark:bg-gray-800/80 border border-gray-200 dark:border-gray-700">
+        <div className="px-4 py-3 rounded-2xl bg-gray-100/80 dark:bg-white/5 border border-gray-200 dark:border-white/10">
           <div className="flex items-center gap-2 mb-1">
             <span className="text-xs font-medium text-tertiary">Live</span>
           </div>
