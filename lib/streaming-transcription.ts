@@ -817,28 +817,59 @@ export class VADSegmentedTranscriber extends EventEmitter {
     const segSamples = this.ongoingSamples.slice(0, boundary);
     const tailSamples = isChange ? this.ongoingSamples.slice(boundary) : [];
 
-    // Speaker ID from the per-window embeddings of THIS segment (multi-window),
-    // falling back to a single embedding when the segment was too short to have
-    // produced any rolling windows.
-    const match = this.acceptUtterance(segText, segSamples, result)
-      ? this.identifySegmentSpeaker(this.segEmbeddings, segSamples)
-      : null;
-
-    if (match) {
-      const speaker = match.speaker;
-      console.log(
-        `[VADSegmentedTranscriber] (${opts.reason}) Speaker → ${speaker} ` +
-          `(${match.info.decision}, score=${match.info.score.toFixed(2)}; ${match.info.reason})`,
-      );
-      this.emit('event', {
-        type: 'final',
-        text: segText,
-        speaker,
-        speakerInfo: match.info,
-        timestamp: Date.now(),
-      } as StreamingEvent);
-    } else if (segText) {
-      console.log(`[VADSegmentedTranscriber] Rejected (hallucination guard): "${segText}"`);
+    // Decide independently: (a) is this real speech worth surfacing, and
+    // (b) who said it. These are SEPARATE questions — failing to attribute a
+    // speaker must never silently discard genuine words. Only the hallucination
+    // guard (a) may drop text; when (b) can't run we still emit, as "unknown".
+    const rejectReason = this.rejectUtterance(segText, segSamples, result);
+    if (rejectReason) {
+      if (segText) {
+        console.log(
+          `[VADSegmentedTranscriber] Rejected (hallucination guard: ${rejectReason}): "${segText}"`,
+        );
+      }
+    } else {
+      // Speaker ID from the per-window embeddings of THIS segment (multi-window),
+      // falling back to a single embedding when the segment was too short to have
+      // produced any rolling windows.
+      const match = this.identifySegmentSpeaker(this.segEmbeddings, segSamples);
+      if (match) {
+        console.log(
+          `[VADSegmentedTranscriber] (${opts.reason}) Speaker → ${match.speaker} ` +
+            `(${match.info.decision}, score=${match.info.score.toFixed(2)}; ${match.info.reason})`,
+        );
+        this.emit('event', {
+          type: 'final',
+          text: segText,
+          speaker: match.speaker,
+          speakerInfo: match.info,
+          timestamp: Date.now(),
+        } as StreamingEvent);
+      } else {
+        // Real speech the diarizer was too short to attribute. Surface the words
+        // rather than dropping them. Prefer the speaker the tracker is currently
+        // holding (a short interjection inside one person's turn stays attributed
+        // to them); fall back to the unknown label only when no one is held.
+        const heldId = this.tracker?.current;
+        const heldName = heldId ? this.enrolledById.get(heldId) : undefined;
+        const speaker = heldName ?? this.speakerId?.unknownLabel ?? 'Unknown Speaker';
+        console.log(
+          `[VADSegmentedTranscriber] (${opts.reason}) Speaker → ${speaker} ` +
+            `(${heldName ? 'held' : 'unknown'}; segment too short for speaker id): "${segText}"`,
+        );
+        this.emit('event', {
+          type: 'final',
+          text: segText,
+          speaker,
+          speakerInfo: {
+            decision: 'unknown',
+            score: 0,
+            bestName: '',
+            reason: 'segment too short for speaker id',
+          },
+          timestamp: Date.now(),
+        } as StreamingEvent);
+      }
     }
 
     // Reset decoder + per-segment diarization state.
@@ -946,35 +977,48 @@ export class VADSegmentedTranscriber extends EventEmitter {
   }
 
   /**
-   * Hallucination / noise gate. Returns true only if the transcription is
-   * trustworthy enough to surface. Accuracy is prioritised over output: when in
-   * doubt we drop the text rather than show something that was never said.
+   * Hallucination / noise gate. Returns `null` when the transcription is
+   * trustworthy enough to surface, otherwise a short reason for the drop (used
+   * for diagnosable logging). Accuracy is prioritised over output: when in doubt
+   * we drop the text rather than show something that was never said.
    */
-  private acceptUtterance(text: string, samples: number[], result: any): boolean {
-    if (!text) return false;
+  private rejectUtterance(text: string, samples: number[], result: any): string | null {
+    if (!text) return 'empty';
 
-    // 1. Duration — too short to be a real utterance.
-    if (samples.length < this.cfg.minUtteranceSec * this.sampleRate) return false;
+    // The signal gates (duration/energy) exist to catch VAD latching onto a
+    // click/hum that produced garbage. But a Zipformer transducer does not
+    // decode a noise blip into multiple coherent words — so once we have real
+    // lexical content (≥2 alphabetic words) we trust the ASR over the raw signal
+    // and skip those gates. Short single-token output stays guarded. The
+    // repetition + blocklist guards below always run; they exist precisely to
+    // catch coherent-looking hallucinations.
+    const wordCount = (text.match(/[a-z]+/gi) ?? []).length;
+    const hasLexicalContent = wordCount >= 2;
 
-    // 2. Energy — VAD can latch onto loud noise; require real signal level.
-    if (rms(samples) < this.cfg.minRms) return false;
+    if (!hasLexicalContent) {
+      // 1. Duration — too short to be a real utterance.
+      if (samples.length < this.cfg.minUtteranceSec * this.sampleRate) return 'too short';
+
+      // 2. Energy — VAD can latch onto loud noise; require real signal level.
+      if (rms(samples) < this.cfg.minRms) return 'low energy';
+    }
 
     // 3. Acoustic confidence — non-English / garbled audio decodes with low
     //    per-token probability against this English model.
     const probs: number[] | undefined = result?.ys_probs;
     if (Array.isArray(probs) && probs.length > 0) {
       const avg = probs.reduce((a, b) => a + b, 0) / probs.length;
-      if (avg < this.cfg.minAvgLogProb) return false;
+      if (avg < this.cfg.minAvgLogProb) return 'low acoustic confidence';
     }
 
     // 4. Repetition — classic looping hallucination ("you you you …").
-    if (isRepetitive(text)) return false;
+    if (isRepetitive(text)) return 'repetition';
 
     // 5. Known hallucination phrases.
     const lower = text.toLowerCase();
-    if (this.cfg.blocklist.some((p) => lower === p || lower.includes(p))) return false;
+    if (this.cfg.blocklist.some((p) => lower === p || lower.includes(p))) return 'blocklisted phrase';
 
-    return true;
+    return null;
   }
 
   /**

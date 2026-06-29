@@ -339,6 +339,11 @@ export class SpeakerIdentifier {
     return this.speakers.length;
   }
 
+  /** Label applied to a voice that could not be matched to an enrolled speaker. */
+  get unknownLabel(): string {
+    return this.cfg.unknownLabel;
+  }
+
   /** True when calibrated AS-Norm scoring is active. */
   asnormActive(): boolean {
     return !!this.ctx && this.ctx.cohort.length > 0 && this.speakers.length > 0;
