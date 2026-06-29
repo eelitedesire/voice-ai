@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { TranscriptEntry } from '@/types';
 import { AudioRecorder, StreamingAudioCapture, StreamingAudioEvent } from '@/lib/audio-utils';
 
@@ -27,6 +27,7 @@ export default function SessionRecorder({
   const streamingCapture = useRef<StreamingAudioCapture | null>(null);
   const transcript = useRef<TranscriptEntry[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [isPreInitialized, setIsPreInitialized] = useState(false);
 
   const handleStreamingEvent = useCallback((event: StreamingAudioEvent) => {
     switch (event.type) {
@@ -72,19 +73,40 @@ export default function SessionRecorder({
     }
   }, [onTranscriptUpdate, onPartialTranscript, onVadStatus]);
 
+  useEffect(() => {
+    // Pre-initialize streaming capture to eliminate delay
+    const preInit = async () => {
+      try {
+        streamingCapture.current = new StreamingAudioCapture(handleStreamingEvent);
+        await streamingCapture.current.preInitialize();
+        setIsPreInitialized(true);
+      } catch (err) {
+        console.warn('Pre-initialization failed, will use batch mode:', err);
+      }
+    };
+    preInit();
+
+    return () => {
+      if (streamingCapture.current) {
+        streamingCapture.current.cleanup();
+      }
+    };
+  }, [handleStreamingEvent]);
+
   const startStreamingRecording = async () => {
     try {
       setError(null);
       transcript.current = [];
 
-      streamingCapture.current = new StreamingAudioCapture(handleStreamingEvent);
-      await streamingCapture.current.start();
+      if (!streamingCapture.current || !isPreInitialized) {
+        streamingCapture.current = new StreamingAudioCapture(handleStreamingEvent);
+      }
+      await streamingCapture.current.startRecording();
 
       setIsRecording(true);
       setIsStreaming(true);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to start streaming';
-      // Fall back to batch mode if WebSocket fails
       if (msg.includes('WebSocket')) {
         console.warn('Streaming unavailable, falling back to batch mode');
         await startBatchRecording();
@@ -132,8 +154,7 @@ export default function SessionRecorder({
 
       if (isStreaming && streamingCapture.current) {
         // Streaming mode: stop capture, server will finalize
-        streamingCapture.current.stop();
-        streamingCapture.current = null;
+        streamingCapture.current.stopRecording();
         setIsRecording(false);
         setIsStreaming(false);
         setIsConnected(false);

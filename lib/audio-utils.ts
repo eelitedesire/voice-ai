@@ -112,69 +112,76 @@ export class StreamingAudioCapture {
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 3;
   private isActive = false;
+  private isPreInitialized = false;
+  private sourceNode: MediaStreamAudioSourceNode | null = null;
+  private isServerReady = false;
+  private readyResolve: (() => void) | null = null;
 
   constructor(onEvent: (event: StreamingAudioEvent) => void) {
     this.onEvent = onEvent;
   }
 
-  async start(): Promise<void> {
+  /**
+   * Pre-initialize audio system (mic + worklet) to eliminate delay.
+   * WebSocket connection is deferred until startRecording().
+   */
+  async preInitialize(): Promise<void> {
+    if (this.isPreInitialized) return;
+
     try {
-      // Kick off everything that can run concurrently. The mic permission/open,
-      // the AudioContext + worklet module load, and the WebSocket handshake are
-      // independent — running them in parallel removes most of the perceived
-      // "Start Session" delay (otherwise they stack up serially).
       this.audioContext = new AudioContext({
         sampleRate: 48000,
         latencyHint: 'interactive',
       });
 
-      // Match enrollment's range-preserving config by default (AGC/NS off);
-      // configurable via NEXT_PUBLIC_LIVE_* for noisy rooms.
       const liveConstraints = liveCaptureConstraints();
-      const micPromise = navigator.mediaDevices.getUserMedia({
-        audio: liveConstraints,
-      });
-      const workletPromise = this.audioContext.audioWorklet.addModule(
-        '/audio-worklet-processor.js',
-      );
-      const wsPromise = this.connectWebSocket();
-      // Resume in case the context starts suspended (autoplay policy).
-      const resumePromise = this.audioContext.resume().catch(() => {});
-
       const [mediaStream] = await Promise.all([
-        micPromise,
-        workletPromise,
-        wsPromise,
-        resumePromise,
+        navigator.mediaDevices.getUserMedia({ audio: liveConstraints }),
+        this.audioContext.audioWorklet.addModule('/audio-worklet-processor.js'),
+        this.audioContext.resume().catch(() => {}),
       ]);
+
       this.mediaStream = mediaStream;
 
-      // Verify the browser actually applied the constraints (it can ignore them).
       const track = mediaStream.getAudioTracks()[0];
       if (track) {
         const readback = verifyConstraints(track, liveConstraints);
-        console.log('[LiveCapture] getUserMedia readback —', formatReadback(readback));
-        if (!readback.rangePreserved) {
-          console.warn(
-            '[LiveCapture] AGC/NS not confirmed disabled; live capture may differ ' +
-              'from enrollment conditions.',
-            readback.settings,
-          );
-        }
+        console.log('[LiveCapture] Pre-init readback —', formatReadback(readback));
       }
 
-      const source = this.audioContext.createMediaStreamSource(this.mediaStream);
+      this.sourceNode = this.audioContext.createMediaStreamSource(this.mediaStream);
       this.workletNode = new AudioWorkletNode(this.audioContext, 'pcm-processor');
 
-      // Forward PCM chunks from worklet to WebSocket as soon as they're ready.
       this.workletNode.port.onmessage = (event) => {
         if (event.data.type === 'audio' && this.ws?.readyState === WebSocket.OPEN) {
           this.ws.send(event.data.samples);
         }
       };
 
-      // Wire up audio graph (don't connect to destination — no playback).
-      source.connect(this.workletNode);
+      this.isPreInitialized = true;
+    } catch (error) {
+      this.cleanup();
+      throw error;
+    }
+  }
+
+  /**
+   * Start recording immediately (assumes preInitialize was called).
+   */
+  async startRecording(): Promise<void> {
+    try {
+      if (!this.isPreInitialized) {
+        await this.preInitialize();
+      }
+
+      await this.connectWebSocket();
+      
+      // Wait for server to be ready before starting audio
+      await this.waitForServerReady();
+
+      if (this.sourceNode && this.workletNode) {
+        this.sourceNode.connect(this.workletNode);
+      }
 
       this.isActive = true;
       this.reconnectAttempts = 0;
@@ -182,6 +189,30 @@ export class StreamingAudioCapture {
       this.cleanup();
       throw error;
     }
+  }
+
+  private async waitForServerReady(): Promise<void> {
+    if (this.isServerReady) return;
+    console.log('[StreamingCapture] Waiting for server ready...');
+    const startTime = Date.now();
+    return new Promise((resolve) => {
+      this.readyResolve = () => {
+        const elapsed = Date.now() - startTime;
+        console.log(`[StreamingCapture] Server ready in ${elapsed}ms`);
+        resolve();
+      };
+      // Timeout after 5 seconds
+      setTimeout(() => {
+        if (!this.isServerReady) {
+          console.warn('[StreamingCapture] Server ready timeout');
+          resolve();
+        }
+      }, 5000);
+    });
+  }
+
+  async start(): Promise<void> {
+    await this.startRecording();
   }
 
   private async connectWebSocket(): Promise<void> {
@@ -193,8 +224,7 @@ export class StreamingAudioCapture {
       this.ws.binaryType = 'arraybuffer';
 
       this.ws.onopen = () => {
-        // Send config
-        this.ws!.send(JSON.stringify({ type: 'config', sampleRate: 16000 }));
+        // Don't send config yet - wait for server ready signal
         this.onEvent?.({ type: 'connected' });
         resolve();
       };
@@ -203,6 +233,22 @@ export class StreamingAudioCapture {
         try {
           const msg = JSON.parse(event.data);
           switch (msg.type) {
+            case 'ready':
+              // Server is ready to accept audio
+              this.isServerReady = true;
+              if (this.readyResolve) {
+                this.readyResolve();
+                this.readyResolve = null;
+              }
+              // Now send config
+              if (this.ws?.readyState === WebSocket.OPEN) {
+                this.ws.send(JSON.stringify({ type: 'config', sampleRate: 16000 }));
+              }
+              break;
+            case 'ready':
+              // Server ready during reconnect
+              this.isServerReady = true;
+              break;
             case 'partial':
               this.onEvent?.({
                 type: 'transcript_partial',
@@ -228,9 +274,6 @@ export class StreamingAudioCapture {
             case 'error':
               this.onEvent?.({ type: 'error', message: msg.message });
               break;
-            case 'ready':
-              // Engine ready, nothing to do
-              break;
           }
         } catch {
           // ignore malformed messages
@@ -238,6 +281,7 @@ export class StreamingAudioCapture {
       };
 
       this.ws.onclose = () => {
+        this.isServerReady = false;
         this.onEvent?.({ type: 'disconnected' });
         if (this.isActive && this.reconnectAttempts < this.maxReconnectAttempts) {
           this.reconnectAttempts++;
@@ -258,21 +302,40 @@ export class StreamingAudioCapture {
   }
 
   /**
+   * Stop recording and tell server to finalize any pending transcription.
+   */
+  stopRecording(): void {
+    this.isActive = false;
+
+    if (this.sourceNode && this.workletNode) {
+      this.sourceNode.disconnect(this.workletNode);
+    }
+
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type: 'stop' }));
+      this.ws.close();
+    }
+    this.ws = null;
+  }
+
+  /**
    * Stop streaming and tell server to finalize any pending transcription.
    */
   stop(): void {
-    this.isActive = false;
-
-    // Tell server to finalize
-    if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({ type: 'stop' }));
-    }
-
+    this.stopRecording();
     this.cleanup();
   }
 
-  private cleanup(): void {
+  cleanup(): void {
     this.isActive = false;
+    this.isPreInitialized = false;
+    this.isServerReady = false;
+    this.readyResolve = null;
+
+    if (this.sourceNode) {
+      this.sourceNode.disconnect();
+      this.sourceNode = null;
+    }
 
     if (this.workletNode) {
       this.workletNode.disconnect();
@@ -290,7 +353,9 @@ export class StreamingAudioCapture {
     }
 
     if (this.ws) {
-      this.ws.close();
+      if (this.ws.readyState === WebSocket.OPEN) {
+        this.ws.close();
+      }
       this.ws = null;
     }
   }

@@ -41,20 +41,30 @@ app.prepare().then(() => {
     console.log('[WS] Client connected for streaming transcription');
 
     let transcriber: VADSegmentedTranscriber | null = null;
-    let initPromise: Promise<void> | null = null;
+    let isReady = false;
 
     // Build the transcriber from the shared, pre-warmed models. Because the
     // heavy models are already loaded, initialize() only mints a cheap
     // per-connection VAD + ASR stream — startup is effectively instant.
-    initPromise = getSharedModels()
+    getSharedModels()
       .then((models) => {
         transcriber = new VADSegmentedTranscriber({ models });
         transcriber.on('event', (event: StreamingEvent) => {
+          // Don't forward the internal 'ready' event - we send our own after full init
+          if (event.type === 'ready') return;
           if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify(event));
           }
         });
         return transcriber.initialize();
+      })
+      .then(() => {
+        isReady = true;
+        // Send ready signal to client after full initialization
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'ready' }));
+          console.log('[WS] Transcriber ready, signaled to client');
+        }
       })
       .catch((err) => {
         console.error('[WS] Transcriber init failed:', err);
@@ -68,13 +78,7 @@ app.prepare().then(() => {
       });
 
     ws.on('message', async (data: Buffer | ArrayBuffer | Buffer[], isBinary: boolean) => {
-      // Wait for initialization
-      if (initPromise) {
-        await initPromise;
-        initPromise = null;
-      }
-
-      if (!transcriber) return;
+      if (!isReady || !transcriber) return;
 
       if (isBinary) {
         // Binary message = PCM audio data (Float32Array)
