@@ -404,6 +404,14 @@ interface TranscriberConfig {
 }
 
 interface DiarConfig {
+  /**
+   * Live (mid-speech) speaker-change detection. OFF by default: when on, a full
+   * speaker-embedding ONNX inference runs every `hopSec` *inside* the audio hot
+   * path, blocking the event loop so the recognizer falls behind and VAD
+   * mis-segments — which itself drops words at segment starts. Enable only after
+   * confirming ASR latency (RTF) is comfortably below 1. Env: LIVE_DIARIZATION.
+   */
+  enabled: boolean;
   /** Rolling embedding window (s) — needs enough voiced audio to be stable. */
   windowSec: number;
   /** How often (s of new audio) to extract a rolling embedding / re-check. */
@@ -432,12 +440,17 @@ function readConfig(sampleRate: number): TranscriberConfig {
   return {
     sampleRate,
     commitSilenceSec: num(process.env.COMMIT_SILENCE_SEC, 0.6),
-    prerollMs: num(process.env.PREROLL_MS, 300),
+    // Pre-roll must cover the VAD's own detection latency (minSpeechDuration
+    // 0.25s + the threshold ramp on soft onsets ≈ 250-350ms) or the first
+    // word(s) of every segment are clipped. 300ms left almost no margin; 500ms
+    // gives ~250ms of headroom so onsets after a pause aren't swallowed.
+    prerollMs: num(process.env.PREROLL_MS, 500),
     minUtteranceSec: num(process.env.MIN_UTTERANCE_SEC, 0.3),
     minRms: num(process.env.MIN_RMS, 0.006),
     minAvgLogProb: num(process.env.MIN_AVG_LOGPROB, -2.5),
     blocklist,
     diar: {
+      enabled: /^(1|true|yes|on)$/i.test(process.env.LIVE_DIARIZATION ?? ''),
       windowSec: num(process.env.DIAR_WINDOW_SEC, 1.5),
       hopSec: num(process.env.DIAR_HOP_SEC, 0.5),
       changeHard: num(process.env.DIAR_CHANGE_HARD, 0.4),
@@ -655,7 +668,7 @@ export class VADSegmentedTranscriber extends EventEmitter {
     // sample a rolling embedding and check whether the voice has diverged from
     // the current segment. If so, commit the segment AT the change boundary so
     // back-to-back speakers never share a segment — no silence required.
-    if (detected && this.maybeDetectSpeakerChange()) {
+    if (this.cfg.diar.enabled && detected && this.maybeDetectSpeakerChange()) {
       this.pushPreroll(win);
       return; // segment was split; a fresh one is already streaming
     }
