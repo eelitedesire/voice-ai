@@ -3,23 +3,24 @@
 ## Topology
 
 ```
-Browser → https://buyafraction.com (public 84.200.6.109:443 only)
-        → reverse proxy on solarautopilotnginx (internal 192.168.160.98)
-        → Node Voice AI app  (127.0.0.1:3004, systemd)
+Browser → edge (terminates real TLS for buyafraction.com, e.g. Cloudflare)
+        → origin nginx on solarautopilotnginx (192.168.160.98:443, snakeoil cert)
+        → Node Voice AI app  (127.0.0.1:3004, PM2)
 ```
 
 - Public IP **84.200.6.109** exposes **only port 443**. SSH is restricted —
   reach the box internally over **Tailscale**.
 - The app host is **solarautopilotnginx** (internal **192.168.160.98**), an
-  existing **Nginx** reverse proxy. Port **3000 is already in use**, so the app
-  listens on **3004**, bound to **127.0.0.1** (never exposed directly).
-- **HTTPS is mandatory:** browsers only grant microphone access in a secure
-  context, so the live session won't start over plain HTTP.
-
-**Decided setup:** TLS is terminated by the **existing Nginx** on this host
-(add `deploy/nginx-buyafraction.conf` as a server block), and the certificate is
-issued via **certbot DNS-01** (HTTP-01 on `:80` can't validate because only `:443`
-is public). `deploy/Caddyfile` is left in the repo only as an unused alternative.
+  existing **Nginx** reverse proxy already serving other domains. Port **3000 is
+  in use**, so the app listens on **3004**, bound to **127.0.0.1** (never exposed).
+- **TLS:** a front edge terminates real HTTPS and connects back to this origin,
+  which presents the self-signed **snakeoil** cert (same pattern as the
+  `solarautopilot.com` vhost). So **no Let's Encrypt cert is needed on this box** —
+  `deploy/nginx-buyafraction.conf` uses the snakeoil cert. (`deploy/Caddyfile` and
+  the certbot DNS-01 notes below are kept only as alternatives for a setup where
+  this box faces clients directly.)
+- **HTTPS is mandatory** end-to-end: browsers only grant microphone access in a
+  secure context, so the live session won't start over plain HTTP.
 
 DNS is already confirmed: `buyafraction.com` → `84.200.6.109`.
 
@@ -75,48 +76,31 @@ pm2 logs voice-ai            # watch for: > Ready on http://127.0.0.1:3004
 > `deploy/ai-cotherapist.service` + `.env.production`; adjust `User=` and
 > `WorkingDirectory=` to your clone path. See the unit file for details.
 
-## 5. Cert (certbot DNS-01) + Nginx reverse proxy
+## 5. Nginx reverse proxy
 
-**5a. Issue the certificate via DNS-01.** This proves domain ownership through a
-DNS TXT record, so it doesn't need port 80.
-
-```bash
-sudo apt install -y certbot
-```
-
-If you have a supported DNS provider, install its plugin and run non-interactively,
-e.g. Cloudflare:
+The vhost uses the host's snakeoil cert (real TLS is at the edge — see Topology),
+so there's no cert step. Add the server block:
 
 ```bash
-sudo apt install -y python3-certbot-dns-cloudflare
-# put API token in /root/.secrets/cloudflare.ini (chmod 600), then:
-sudo certbot certonly \
-  --dns-cloudflare --dns-cloudflare-credentials /root/.secrets/cloudflare.ini \
-  -d buyafraction.com -d www.buyafraction.com
-```
-
-No plugin for your provider? Use the manual DNS challenge — certbot prints a
-`_acme-challenge` TXT record for you to add at your DNS host:
-
-```bash
-sudo certbot certonly --manual --preferred-challenges dns \
-  -d buyafraction.com -d www.buyafraction.com
-```
-
-Either way the cert lands at `/etc/letsencrypt/live/buyafraction.com/`.
-
-**5b. Add the Nginx server block.**
-
-```bash
-sudo cp ~/voice-ai/deploy/nginx-buyafraction.conf /etc/nginx/sites-available/buyafraction.com
-sudo ln -s /etc/nginx/sites-available/buyafraction.com /etc/nginx/sites-enabled/
-# The ssl_certificate lines already point at /etc/letsencrypt/live/buyafraction.com/.
+sudo cp ~/voice-ai/deploy/nginx-buyafraction.conf /etc/nginx/sites-available/buyafraction
+sudo ln -s /etc/nginx/sites-available/buyafraction /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
-> Manual DNS-01 certs don't auto-renew. Either re-run the plugin-based command
-> (renews automatically via `certbot renew`) or set a reminder to renew the
-> manual cert before it expires (~90 days).
+Verify the origin routes the domain to the app:
+
+```bash
+curl -kI https://localhost -H 'Host: buyafraction.com'   # expect HTTP/2 200, X-Powered-By: Next.js
+```
+
+> If `map $http_upgrade` is already defined elsewhere in nginx, delete that block
+> from the conf first (`sudo grep -rn 'map \$http_upgrade' /etc/nginx/`).
+>
+> **Alternative (this box faces clients directly, no edge):** the snakeoil cert
+> would trigger browser warnings, so issue a real cert. Only `:443` is public, so
+> HTTP-01 (`:80`) can't validate — use certbot **DNS-01**
+> (`sudo certbot certonly --manual --preferred-challenges dns -d buyafraction.com`)
+> and point `ssl_certificate*` at `/etc/letsencrypt/live/buyafraction.com/`.
 
 ## 6. Firewall
 
