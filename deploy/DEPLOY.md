@@ -30,7 +30,9 @@ DNS is already confirmed: `buyafraction.com` → `84.200.6.109`.
 
 ```bash
 sudo apt update
-sudo apt install -y git curl ca-certificates bzip2 build-essential
+# bzip2: extract model tarballs. ffmpeg: speaker enrollment converts the
+# browser's .webm recording to 16kHz mono WAV (required, or enrollment fails).
+sudo apt install -y git curl ca-certificates bzip2 build-essential ffmpeg
 
 # Node.js 24 (matches the version this project was built with)
 curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
@@ -147,5 +149,6 @@ bash ~/voice-ai/deploy/deploy.sh     # pull → build → pm2 restart
 | `sherpa-onnx` load error | Ensure `npm ci` installed `sherpa-onnx-linux-x64`; the PM2 `interpreter: bash` + `run-with-addon.sh` must set `LD_LIBRARY_PATH` |
 | No HTTPS / cert fails | Only `:443` is public, so HTTP-01 (`:80`) won't validate — use DNS-01. Check `sudo journalctl -u nginx` and `sudo nginx -t` |
 | Mic blocked | Page must be HTTPS; check the padlock and browser site permissions |
+| Enrollment fails (`ffmpeg: not found`, code 127) | `sudo apt install -y ffmpeg` — enrollment converts the recorded `.webm` to WAV |
 | WebSocket won't upgrade | Confirm the `map $http_upgrade` block + `Upgrade`/`Connection` headers are present. Confirm the app listens on 127.0.0.1:3004 (`ss -ltnp | grep 3004`) |
 | Port 3004 in use too | Pick another free port; update it in `ecosystem.config.cjs` (`PORT`) and the Nginx `proxy_pass` together, then `pm2 restart voice-ai` + `nginx -s reload` |
