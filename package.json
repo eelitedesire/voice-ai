@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "bash scripts/run-with-addon.sh tsx server.ts",
     "dev:next": "bash scripts/run-with-addon.sh next dev",
-    "build": "next build",
+    "build": "bash scripts/run-with-addon.sh next build",
     "start": "bash scripts/run-with-addon.sh tsx server.ts",
     "start:next": "bash scripts/run-with-addon.sh next start",
     "lint": "next lint",
