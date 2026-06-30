@@ -16,14 +16,10 @@ Browser → https://buyafraction.com (public 84.200.6.109:443 only)
 - **HTTPS is mandatory:** browsers only grant microphone access in a secure
   context, so the live session won't start over plain HTTP.
 
-> **Reverse proxy choice — confirm before step 5.** Two services cannot both
-> bind `:443`. Since this box already runs Nginx, the natural fit is to add an
-> **Nginx server block** (`deploy/nginx-buyafraction.conf`). The `deploy/Caddyfile`
-> is the alternative if you instead want Caddy to own `:443`. Pick one.
->
-> **Cert note:** only `:443` is reachable from the internet, so the Let's Encrypt
-> **HTTP-01 challenge (port 80) will fail**. Use **DNS-01**, an existing wildcard
-> cert, or Caddy's **TLS-ALPN-01** (works over 443). See step 5.
+**Decided setup:** TLS is terminated by the **existing Nginx** on this host
+(add `deploy/nginx-buyafraction.conf` as a server block), and the certificate is
+issued via **certbot DNS-01** (HTTP-01 on `:80` can't validate because only `:443`
+is public). `deploy/Caddyfile` is left in the repo only as an unused alternative.
 
 DNS is already confirmed: `buyafraction.com` → `84.200.6.109`.
 
@@ -82,28 +78,49 @@ sudo systemctl enable --now ai-cotherapist
 journalctl -u ai-cotherapist -f          # watch for "> Ready on http://127.0.0.1:3004"
 ```
 
-## 5. Reverse proxy + HTTPS  (pick ONE)
+## 5. Cert (certbot DNS-01) + Nginx reverse proxy
 
-### Option A — existing Nginx (recommended for this host)
+**5a. Issue the certificate via DNS-01.** This proves domain ownership through a
+DNS TXT record, so it doesn't need port 80.
+
+```bash
+sudo apt install -y certbot
+```
+
+If you have a supported DNS provider, install its plugin and run non-interactively,
+e.g. Cloudflare:
+
+```bash
+sudo apt install -y python3-certbot-dns-cloudflare
+# put API token in /root/.secrets/cloudflare.ini (chmod 600), then:
+sudo certbot certonly \
+  --dns-cloudflare --dns-cloudflare-credentials /root/.secrets/cloudflare.ini \
+  -d buyafraction.com -d www.buyafraction.com
+```
+
+No plugin for your provider? Use the manual DNS challenge — certbot prints a
+`_acme-challenge` TXT record for you to add at your DNS host:
+
+```bash
+sudo certbot certonly --manual --preferred-challenges dns \
+  -d buyafraction.com -d www.buyafraction.com
+```
+
+Either way the cert lands at `/etc/letsencrypt/live/buyafraction.com/`.
+
+**5b. Add the Nginx server block.**
 
 ```bash
 sudo cp /opt/voice-ai/deploy/nginx-buyafraction.conf /etc/nginx/sites-available/buyafraction.com
 sudo ln -s /etc/nginx/sites-available/buyafraction.com /etc/nginx/sites-enabled/
-# Provide a cert (DNS-01 or existing wildcard — HTTP-01 on :80 isn't reachable):
-#   sudo certbot certonly --dns-<provider> -d buyafraction.com -d www.buyafraction.com
-# then uncomment the ssl_certificate lines in the conf.
+# Uncomment the two ssl_certificate lines in that file (they already point at
+# /etc/letsencrypt/live/buyafraction.com/).
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
-### Option B — Caddy owns :443 (only if Nginx is NOT bound to 443 here)
-
-```bash
-sudo cp /opt/voice-ai/deploy/Caddyfile /etc/caddy/Caddyfile
-sudo mkdir -p /var/log/caddy && sudo chown caddy:caddy /var/log/caddy
-# Caddy uses TLS-ALPN-01 over :443, which works even though :80 is closed.
-sudo systemctl reload caddy
-sudo journalctl -u caddy -f              # confirm certificate obtained, no errors
-```
+> Manual DNS-01 certs don't auto-renew. Either re-run the plugin-based command
+> (renews automatically via `certbot renew`) or set a reminder to renew the
+> manual cert before it expires (~90 days).
 
 ## 6. Firewall
 
