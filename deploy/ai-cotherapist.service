@@ -24,7 +24,7 @@ EnvironmentFile=/opt/voice-ai/.env.production
 # Production runtime settings. HOSTNAME stays on loopback because Caddy
 # is the only thing that should reach the Node process.
 Environment=NODE_ENV=production
-Environment=PORT=3000
+Environment=PORT=3004
 Environment=HOSTNAME=127.0.0.1
 # systemd ships a minimal PATH; make sure node/npm are findable.
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin

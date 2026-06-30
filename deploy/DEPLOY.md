@@ -1,25 +1,31 @@
-# Deploying AI Co-Therapist to a server
+# Deploying AI Co-Therapist
 
-Target: **Ubuntu/Debian** server at **84.200.6.109**, served at **https://buyafraction.com**
-via **systemd** (app) + **Caddy** (auto-HTTPS reverse proxy).
+## Topology
 
-> Why HTTPS is mandatory: the browser only grants microphone access in a
-> "secure context". Without TLS the live session will never start. Caddy obtains
-> and renews a Let's Encrypt certificate automatically.
+```
+Browser → https://buyafraction.com (public 84.200.6.109:443 only)
+        → reverse proxy on solarautopilotnginx (internal 192.168.160.98)
+        → Node Voice AI app  (127.0.0.1:3004, systemd)
+```
 
----
+- Public IP **84.200.6.109** exposes **only port 443**. SSH is restricted —
+  reach the box internally over **Tailscale**.
+- The app host is **solarautopilotnginx** (internal **192.168.160.98**), an
+  existing **Nginx** reverse proxy. Port **3000 is already in use**, so the app
+  listens on **3004**, bound to **127.0.0.1** (never exposed directly).
+- **HTTPS is mandatory:** browsers only grant microphone access in a secure
+  context, so the live session won't start over plain HTTP.
 
-## 0. DNS (do this first — cert issuance depends on it)
+> **Reverse proxy choice — confirm before step 5.** Two services cannot both
+> bind `:443`. Since this box already runs Nginx, the natural fit is to add an
+> **Nginx server block** (`deploy/nginx-buyafraction.conf`). The `deploy/Caddyfile`
+> is the alternative if you instead want Caddy to own `:443`. Pick one.
+>
+> **Cert note:** only `:443` is reachable from the internet, so the Let's Encrypt
+> **HTTP-01 challenge (port 80) will fail**. Use **DNS-01**, an existing wildcard
+> cert, or Caddy's **TLS-ALPN-01** (works over 443). See step 5.
 
-At your domain registrar / DNS host for `buyafraction.com`, create:
-
-| Type | Name | Value          |
-|------|------|----------------|
-| A    | `@`  | `84.200.6.109` |
-| A    | `www`| `84.200.6.109` |
-
-Wait until `dig +short buyafraction.com` returns `84.200.6.109` before requesting
-the certificate (step 5).
+DNS is already confirmed: `buyafraction.com` → `84.200.6.109`.
 
 ---
 
@@ -33,13 +39,14 @@ sudo apt install -y git curl ca-certificates bzip2 build-essential
 curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
 sudo apt install -y nodejs
 
-# Caddy (official repo)
-sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
-  | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
-  | sudo tee /etc/apt/sources.list.d/caddy-stable.list
-sudo apt update && sudo apt install -y caddy
+# Nginx is already installed on this host. ONLY if you chose the Caddy option
+# (see step 5) install Caddy instead:
+#   sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https
+#   curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
+#     | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+#   curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
+#     | sudo tee /etc/apt/sources.list.d/caddy-stable.list
+#   sudo apt update && sudo apt install -y caddy
 ```
 
 ## 2. App user + code
@@ -72,27 +79,44 @@ sudo chmod 600 /opt/voice-ai/.env.production
 sudo cp /opt/voice-ai/deploy/ai-cotherapist.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now ai-cotherapist
-journalctl -u ai-cotherapist -f          # watch for "> Ready on http://127.0.0.1:3000"
+journalctl -u ai-cotherapist -f          # watch for "> Ready on http://127.0.0.1:3004"
 ```
 
-## 5. Caddy reverse proxy + HTTPS
+## 5. Reverse proxy + HTTPS  (pick ONE)
+
+### Option A — existing Nginx (recommended for this host)
+
+```bash
+sudo cp /opt/voice-ai/deploy/nginx-buyafraction.conf /etc/nginx/sites-available/buyafraction.com
+sudo ln -s /etc/nginx/sites-available/buyafraction.com /etc/nginx/sites-enabled/
+# Provide a cert (DNS-01 or existing wildcard — HTTP-01 on :80 isn't reachable):
+#   sudo certbot certonly --dns-<provider> -d buyafraction.com -d www.buyafraction.com
+# then uncomment the ssl_certificate lines in the conf.
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+### Option B — Caddy owns :443 (only if Nginx is NOT bound to 443 here)
 
 ```bash
 sudo cp /opt/voice-ai/deploy/Caddyfile /etc/caddy/Caddyfile
 sudo mkdir -p /var/log/caddy && sudo chown caddy:caddy /var/log/caddy
+# Caddy uses TLS-ALPN-01 over :443, which works even though :80 is closed.
 sudo systemctl reload caddy
 sudo journalctl -u caddy -f              # confirm certificate obtained, no errors
 ```
 
 ## 6. Firewall
 
+The public edge already exposes only `:443`. On the internal host, allow Tailscale
+plus the proxy port:
+
 ```bash
-sudo ufw allow OpenSSH
-sudo ufw allow 80,443/tcp
+sudo ufw allow in on tailscale0
+sudo ufw allow 443/tcp
 sudo ufw enable
 ```
 
-(Also open ports 22/80/443 in any cloud-provider security group.)
+The app port **3004 stays internal** (bound to 127.0.0.1) — do not open it.
 
 ## 7. Enroll the two speakers (one-time, app-specific)
 
@@ -124,6 +148,7 @@ sudo -u deploy bash /opt/voice-ai/deploy/deploy.sh
 |---|---|
 | App won't start | `journalctl -u ai-cotherapist -e` — usually missing `node` in PATH, addon lib path, or models not downloaded |
 | `sherpa-onnx` load error | Ensure `npm ci` installed `sherpa-onnx-linux-x64`; `run-with-addon.sh` must set `LD_LIBRARY_PATH` |
-| No HTTPS / cert fails | DNS not yet pointing at `84.200.6.109`; re-check `dig buyafraction.com`, then `sudo systemctl reload caddy` |
+| No HTTPS / cert fails | Only `:443` is public, so HTTP-01 (`:80`) won't validate — use DNS-01 or Caddy's TLS-ALPN-01. Check proxy logs (`journalctl -u nginx`/`-u caddy`) |
 | Mic blocked | Page must be HTTPS; check the padlock and browser site permissions |
-| WebSocket won't upgrade | `journalctl -u caddy` for proxy errors; confirm app is listening on 127.0.0.1:3000 |
+| WebSocket won't upgrade | Nginx: confirm the `map $http_upgrade` block + `Upgrade`/`Connection` headers are present. Confirm the app listens on 127.0.0.1:3004 (`ss -ltnp | grep 3004`) |
+| Port 3004 in use too | Pick another free port; update `PORT` in `.env.production`, the systemd unit, and the proxy `proxy_pass`/`reverse_proxy` target together |
