@@ -64,6 +64,9 @@ export function EnrollmentCard({
   const [constraintWarning, setConstraintWarning] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<{ code: string; message: string }[] | null>(null);
   const [done, setDone] = useState(speaker?.enrollmentStatus === 'complete');
+  // When set, the user is re-recording an already-captured condition (a "back").
+  // The backend replaces that condition's prototypes, so redo is non-destructive.
+  const [redo, setRedo] = useState<Condition | null>(null);
 
   const mediaRef = useRef<{ recorder: MediaRecorder; stream: MediaStream; ctx: AudioContext; timer: ReturnType<typeof setInterval> } | null>(null);
   const recordingRef = useRef(false);
@@ -71,6 +74,8 @@ export function EnrollmentCard({
   const effectiveName = speaker?.name ?? name.trim();
   const nextCondition = REQUIRED.find((c) => !passed.includes(c)) ?? null;
   const allCaptured = nextCondition === null;
+  // What to record now: an explicit redo target, else the next missing step.
+  const activeCondition = redo ?? nextCondition;
 
   // ── Recording ──────────────────────────────────────────────────────────────
   const startRecording = async (condition: Condition) => {
@@ -137,6 +142,7 @@ export function EnrollmentCard({
       const res = await onEnrollCondition(effectiveName, condition, blob);
       if (res.accepted) {
         setPassed(res.conditionsPresent ?? [...passed, condition]);
+        setRedo(null); // exit redo mode; return to the normal step flow
         onRefresh();
       } else {
         setReason(res.reason ?? 'Recording rejected — please redo this condition.');
@@ -233,21 +239,27 @@ export function EnrollmentCard({
         <div className="flex items-center justify-center gap-2">
           {REQUIRED.map((c) => {
             const isPassed = passed.includes(c);
-            const isCurrent = c === nextCondition;
+            const isCurrent = c === activeCondition;
+            // Passed steps are clickable to re-record (back/redo).
+            const canRedo = isPassed && !isRecording && !busy;
             return (
-              <div
+              <button
                 key={c}
-                className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium ${
+                type="button"
+                onClick={() => canRedo && setRedo(c)}
+                disabled={!canRedo}
+                title={canRedo ? 'Re-record this sample' : undefined}
+                className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium transition ${
                   isPassed
-                    ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400'
+                    ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 cursor-pointer hover:ring-1 hover:ring-green-500/50'
                     : isCurrent
                       ? 'bg-accent/15 text-accent ring-1 ring-accent/40'
                       : 'bg-gray-100 dark:bg-gray-800 text-tertiary'
-                }`}
+                } ${redo === c ? 'ring-2 ring-accent/60' : ''} disabled:cursor-default`}
               >
                 {isPassed && <Check className="w-3 h-3" />}
                 {CONDITION_META[c].label}
-              </div>
+              </button>
             );
           })}
         </div>
@@ -265,11 +277,19 @@ export function EnrollmentCard({
           </div>
         )}
 
-        {/* Current step */}
-        {!allCaptured && nextCondition && (
+        {/* Current step (next missing condition, or a redo of a passed one) */}
+        {activeCondition && (
           <div className="text-center space-y-3">
-            <p className="text-sm text-primary font-medium">{CONDITION_META[nextCondition].label} sample</p>
-            <p className="text-xs text-secondary">{CONDITION_META[nextCondition].prompt}</p>
+            <p className="text-sm text-primary font-medium">{CONDITION_META[activeCondition].label} sample</p>
+            <p className="text-xs text-secondary">{CONDITION_META[activeCondition].prompt}</p>
+            {redo && (
+              <p className="text-xs text-accent">
+                Re-recording the {CONDITION_META[redo].label.toLowerCase()} sample — this replaces the earlier one.{' '}
+                <button type="button" onClick={() => setRedo(null)} className="underline hover:text-accent/80">
+                  Cancel
+                </button>
+              </p>
+            )}
 
             {isRecording ? (
               <div className="flex flex-col items-center gap-3 py-2">
@@ -289,7 +309,7 @@ export function EnrollmentCard({
               </div>
             ) : (
               <button
-                onClick={() => startRecording(nextCondition)}
+                onClick={() => startRecording(activeCondition!)}
                 disabled={!effectiveName || busy}
                 className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-lg bg-gradient-to-r from-accent to-accent/80 text-white font-medium disabled:from-gray-400 disabled:to-gray-400 disabled:cursor-not-allowed shadow-lg"
               >
@@ -299,7 +319,7 @@ export function EnrollmentCard({
                   </>
                 ) : (
                   <>
-                    <Mic className="w-5 h-5" /> Record {CONDITION_META[nextCondition].label}
+                    <Mic className="w-5 h-5" /> {redo ? 'Re-record' : 'Record'} {CONDITION_META[activeCondition].label}
                   </>
                 )}
               </button>
@@ -307,8 +327,8 @@ export function EnrollmentCard({
           </div>
         )}
 
-        {/* Finalize */}
-        {allCaptured && (
+        {/* Finalize (hidden while re-recording a step) */}
+        {allCaptured && !redo && (
           <button
             onClick={finalize}
             disabled={busy}
