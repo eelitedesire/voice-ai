@@ -67,13 +67,15 @@ export function buildVadConfig(modelPath: string) {
   return {
     sileroVad: {
       model: path.join(modelPath, 'silero_vad.onnx'),
-      // Slightly longer min speech than min silence so brief noise transients
-      // don't latch the detector into "speech".
-      minSilenceDuration: num(process.env.VAD_MIN_SILENCE, 0.1),
+      // Defaults restored to the original implementation so the VAD finalizes a
+      // completed segment (vad.pop()) under the same conditions as before:
+      // 0.3s of trailing silence ends a segment, and detection sensitivity is
+      // 0.4. These are the values that govern paragraph boundaries now that the
+      // trailing-silence timer and ASR endpoint no longer commit. Still
+      // env-overridable for tuning.
+      minSilenceDuration: num(process.env.VAD_MIN_SILENCE, 0.3),
       minSpeechDuration: num(process.env.VAD_MIN_SPEECH, 0.25),
-      // 0.5 is the silero default; higher = fewer false positives on noise,
-      // which is exactly what we want for hallucination resistance.
-      threshold: num(process.env.VAD_THRESHOLD, 0.5),
+      threshold: num(process.env.VAD_THRESHOLD, 0.4),
       windowSize: 512,
     },
     sampleRate: SAMPLE_RATE,

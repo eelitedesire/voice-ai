@@ -387,8 +387,6 @@ export class StreamingTranscriber extends EventEmitter {
 
 interface TranscriberConfig {
   sampleRate: number;
-  /** Trailing silence (s) after speech that commits the current paragraph. */
-  commitSilenceSec: number;
   /** Audio (ms) prepended from before VAD fired, so word onsets aren't clipped. */
   prerollMs: number;
   /** Reject utterances shorter than this (s) — likely a click/noise blip. */
@@ -439,7 +437,6 @@ function readConfig(sampleRate: number): TranscriberConfig {
 
   return {
     sampleRate,
-    commitSilenceSec: num(process.env.COMMIT_SILENCE_SEC, 0.6),
     // Pre-roll must cover the VAD's own detection latency (minSpeechDuration
     // 0.25s + the threshold ramp on soft onsets ≈ 250-350ms) or the first
     // word(s) of every segment are clipped. 300ms left almost no margin; 500ms
@@ -472,7 +469,7 @@ function readConfig(sampleRate: number): TranscriberConfig {
  *                       ▼
  *               streaming ASR  ── emits live `partial`s every chunk, never stops
  *                       │
- *          pause detected (VAD silence + ASR endpoint)
+ *      VAD emits a completed segment  (or a speaker change, if diarization on)
  *                       ▼
  *           hallucination filters ── energy / duration / confidence / repetition
  *                       ▼
@@ -510,8 +507,6 @@ export class VADSegmentedTranscriber extends EventEmitter {
   private readonly VAD_WINDOW = 512;
   private leftover: Float32Array = new Float32Array(0); // sub-window remainder
   private isSpeechActive = false;
-  private trailingSilenceSamples = 0;
-  private commitSilenceSamples = 0;
 
   // Pre-roll ring buffer of recent audio (prior windows), to recover the word
   // onset that the VAD's min-speech-duration would otherwise swallow.
@@ -570,7 +565,6 @@ export class VADSegmentedTranscriber extends EventEmitter {
           `${this.asnorm ? 'AS-Norm' : 'degraded'} mode`,
       );
 
-      this.commitSilenceSamples = Math.round(this.cfg.commitSilenceSec * this.sampleRate);
       this.prerollCap = Math.round((this.cfg.prerollMs / 1000) * this.sampleRate);
       this.diarWindowSamples = Math.round(this.cfg.diar.windowSec * this.sampleRate);
       this.diarHopSamples = Math.round(this.cfg.diar.hopSec * this.sampleRate);
@@ -629,7 +623,6 @@ export class VADSegmentedTranscriber extends EventEmitter {
         // Speech onset: open a paragraph, replay the pre-roll so the first
         // word isn't clipped, then fall through to feed this window too.
         this.isSpeechActive = true;
-        this.trailingSilenceSamples = 0;
         if (this.preroll.length > 0) {
           const pre = new Float32Array(this.preroll);
           this.asrStream.acceptWaveform({ samples: pre, sampleRate: this.sampleRate });
@@ -639,6 +632,9 @@ export class VADSegmentedTranscriber extends EventEmitter {
       } else {
         // Idle: keep the audio only in the pre-roll ring buffer; never feed
         // silence/noise to the ASR (this is the core hallucination guard).
+        // Drain any stray VAD segment so its boundary can't leak into the
+        // next paragraph (nothing is being decoded while idle).
+        if (!this.vad.isEmpty()) this.vad.pop();
         this.pushPreroll(win);
         return;
       }
@@ -647,12 +643,6 @@ export class VADSegmentedTranscriber extends EventEmitter {
     // --- Speaking ---
     this.asrStream.acceptWaveform({ samples: win, sampleRate: this.sampleRate });
     for (let k = 0; k < win.length; k++) this.ongoingSamples.push(win[k]);
-
-    if (detected) {
-      this.trailingSilenceSamples = 0;
-    } else {
-      this.trailingSilenceSamples += win.length;
-    }
 
     while (this.recognizer.isReady(this.asrStream)) {
       this.recognizer.decode(this.asrStream);
@@ -673,12 +663,13 @@ export class VADSegmentedTranscriber extends EventEmitter {
       return; // segment was split; a fresh one is already streaming
     }
 
-    // Paragraph boundary: enough trailing silence after speech, OR the ASR's
-    // own endpoint rule fired. Either way, commit instantly and keep streaming.
-    if (
-      this.trailingSilenceSamples >= this.commitSilenceSamples ||
-      this.recognizer.isEndpoint(this.asrStream)
-    ) {
+    // Paragraph boundary: the VAD has emitted a completed speech segment (its
+    // own endpoint, governed by VAD_MIN_SILENCE) — equivalent to the original
+    // vad.front()/pop() segmentation. This, plus a detected speaker change
+    // handled above, are the ONLY paragraph boundaries. A trailing-silence
+    // timer and the ASR endpoint/punctuation no longer commit paragraphs.
+    if (!this.vad.isEmpty()) {
+      this.vad.pop();
       this.commitSegment({ reason: 'pause' });
     }
 
@@ -888,7 +879,6 @@ export class VADSegmentedTranscriber extends EventEmitter {
     // Reset decoder + per-segment diarization state.
     this.recognizer.reset(this.asrStream);
     this.lastPartialText = '';
-    this.trailingSilenceSamples = 0;
     this.segEmbeddings = [];
     this.segCentroid = null;
     this.segCentroidCount = 0;
