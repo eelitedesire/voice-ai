@@ -1,0 +1,25 @@
+# Caddy reverse proxy for AI Co-Therapist
+# - Terminates TLS automatically (Let's Encrypt) for buyafraction.com
+# - Proxies HTTP + the /ws/transcribe WebSocket to the Node app on 127.0.0.1:3000
+#   (Caddy upgrades WebSocket connections transparently; no extra config needed)
+#
+# Install to: /etc/caddy/Caddyfile   then:  sudo systemctl reload caddy
+
+buyafraction.com, www.buyafraction.com {
+	encode zstd gzip
+
+	# Forward everything (pages, API routes, and the WebSocket) to the app.
+	reverse_proxy 127.0.0.1:3000
+
+	# Generous timeouts: model warm-up + long live transcription sessions.
+	@ws {
+		header Connection *Upgrade*
+		header Upgrade websocket
+	}
+	reverse_proxy @ws 127.0.0.1:3000
+
+	log {
+		output file /var/log/caddy/buyafraction.log
+		format console
+	}
+}

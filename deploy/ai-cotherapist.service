@@ -1,0 +1,47 @@
+# systemd unit for the AI Co-Therapist Next.js + WebSocket server.
+#
+# Install to: /etc/systemd/system/ai-cotherapist.service   then:
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now ai-cotherapist
+#
+# Assumes the app lives at /opt/voice-ai and runs as user "deploy".
+# Adjust User/WorkingDirectory if you cloned elsewhere.
+
+[Unit]
+Description=AI Co-Therapist (Next.js custom server + WebSocket transcription)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=deploy
+Group=deploy
+WorkingDirectory=/opt/voice-ai
+
+# Secrets + tunables come from this file (see .env.production.example)
+EnvironmentFile=/opt/voice-ai/.env.production
+
+# Production runtime settings. HOSTNAME stays on loopback because Caddy
+# is the only thing that should reach the Node process.
+Environment=NODE_ENV=production
+Environment=PORT=3000
+Environment=HOSTNAME=127.0.0.1
+# systemd ships a minimal PATH; make sure node/npm are findable.
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# scripts/run-with-addon.sh sets LD_LIBRARY_PATH for the sherpa-onnx native
+# addon, then launches the server via tsx.
+ExecStart=/usr/bin/bash scripts/run-with-addon.sh tsx server.ts
+
+# Model warm-up can take a while on first boot; don't let systemd kill it early.
+TimeoutStartSec=180
+Restart=on-failure
+RestartSec=5
+
+# Light hardening (the app only needs its own dir + network).
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
