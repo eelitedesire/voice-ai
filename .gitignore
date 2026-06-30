@@ -52,3 +52,7 @@ models/
 .vault/
 .env*
 !.env.production.example
+
+# PM2 config holds secrets; only the example template is tracked
+ecosystem.config.cjs
+ecosystem.config.js

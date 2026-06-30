@@ -47,36 +47,33 @@ sudo apt install -y nodejs
 
 ## 2. App user + code
 
-```bash
-sudo useradd -r -m -d /opt/voice-ai -s /bin/bash deploy || true
-sudo mkdir -p /opt/voice-ai
-sudo chown deploy:deploy /opt/voice-ai
-
-sudo -u deploy git clone https://github.com/eelitedesire/voice-ai.git /opt/voice-ai
-cd /opt/voice-ai
-sudo -u deploy npm ci
-sudo -u deploy npm run download-models     # ~hundreds of MB; downloads ASR+speaker+VAD
-sudo -u deploy npm run build
-```
-
-## 3. Secrets
+On this host the apps live in `~` (localadmin) under PM2, so clone there:
 
 ```bash
-sudo -u deploy cp /opt/voice-ai/.env.production.example /opt/voice-ai/.env.production
-sudo -u deploy nano /opt/voice-ai/.env.production
-#   GROQ_API_KEY=...                (from https://console.groq.com/keys)
-#   VAULT_SECRET=<openssl rand -hex 32>
-sudo chmod 600 /opt/voice-ai/.env.production
+cd ~
+git clone https://github.com/eelitedesire/voice-ai.git
+cd voice-ai
+npm ci
+npm run download-models     # ~hundreds of MB; downloads ASR+speaker+VAD
+npm run build
 ```
 
-## 4. systemd service
+## 3. Run under PM2 (secrets live in the PM2 config)
 
 ```bash
-sudo cp /opt/voice-ai/deploy/ai-cotherapist.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now ai-cotherapist
-journalctl -u ai-cotherapist -f          # watch for "> Ready on http://127.0.0.1:3004"
+cd ~/voice-ai
+cp ecosystem.config.example.cjs ecosystem.config.cjs
+nano ecosystem.config.cjs    # set GROQ_API_KEY (console.groq.com/keys) + VAULT_SECRET (openssl rand -hex 32)
+pm2 start ecosystem.config.cjs
+pm2 save                     # persist across reboots
+pm2 logs voice-ai            # watch for: > Ready on http://127.0.0.1:3004
 ```
+
+`ecosystem.config.cjs` holds secrets and is gitignored — never commit it.
+
+> **Alternative — systemd** (if you'd rather not use PM2): use
+> `deploy/ai-cotherapist.service` + `.env.production`; adjust `User=` and
+> `WorkingDirectory=` to your clone path. See the unit file for details.
 
 ## 5. Cert (certbot DNS-01) + Nginx reverse proxy
 
@@ -111,10 +108,9 @@ Either way the cert lands at `/etc/letsencrypt/live/buyafraction.com/`.
 **5b. Add the Nginx server block.**
 
 ```bash
-sudo cp /opt/voice-ai/deploy/nginx-buyafraction.conf /etc/nginx/sites-available/buyafraction.com
+sudo cp ~/voice-ai/deploy/nginx-buyafraction.conf /etc/nginx/sites-available/buyafraction.com
 sudo ln -s /etc/nginx/sites-available/buyafraction.com /etc/nginx/sites-enabled/
-# Uncomment the two ssl_certificate lines in that file (they already point at
-# /etc/letsencrypt/live/buyafraction.com/).
+# The ssl_certificate lines already point at /etc/letsencrypt/live/buyafraction.com/.
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
@@ -141,8 +137,8 @@ Speaker ID needs voiceprints before live sessions work. From the UI's
 "Enroll Speakers" tab, or via CLI on the server:
 
 ```bash
-cd /opt/voice-ai
-sudo -u deploy npm run enroll
+cd ~/voice-ai
+npm run enroll
 ```
 
 ---
@@ -156,16 +152,16 @@ sudo -u deploy npm run enroll
 ## Updating after a code change
 
 ```bash
-sudo -u deploy bash /opt/voice-ai/deploy/deploy.sh
+bash ~/voice-ai/deploy/deploy.sh     # pull → build → pm2 restart
 ```
 
 ## Troubleshooting
 
 | Symptom | Check |
 |---|---|
-| App won't start | `journalctl -u ai-cotherapist -e` — usually missing `node` in PATH, addon lib path, or models not downloaded |
-| `sherpa-onnx` load error | Ensure `npm ci` installed `sherpa-onnx-linux-x64`; `run-with-addon.sh` must set `LD_LIBRARY_PATH` |
-| No HTTPS / cert fails | Only `:443` is public, so HTTP-01 (`:80`) won't validate — use DNS-01 or Caddy's TLS-ALPN-01. Check proxy logs (`journalctl -u nginx`/`-u caddy`) |
+| App won't start | `pm2 logs voice-ai` — usually missing env, addon lib path, or models not downloaded |
+| `sherpa-onnx` load error | Ensure `npm ci` installed `sherpa-onnx-linux-x64`; the PM2 `interpreter: bash` + `run-with-addon.sh` must set `LD_LIBRARY_PATH` |
+| No HTTPS / cert fails | Only `:443` is public, so HTTP-01 (`:80`) won't validate — use DNS-01. Check `sudo journalctl -u nginx` and `sudo nginx -t` |
 | Mic blocked | Page must be HTTPS; check the padlock and browser site permissions |
-| WebSocket won't upgrade | Nginx: confirm the `map $http_upgrade` block + `Upgrade`/`Connection` headers are present. Confirm the app listens on 127.0.0.1:3004 (`ss -ltnp | grep 3004`) |
-| Port 3004 in use too | Pick another free port; update `PORT` in `.env.production`, the systemd unit, and the proxy `proxy_pass`/`reverse_proxy` target together |
+| WebSocket won't upgrade | Confirm the `map $http_upgrade` block + `Upgrade`/`Connection` headers are present. Confirm the app listens on 127.0.0.1:3004 (`ss -ltnp | grep 3004`) |
+| Port 3004 in use too | Pick another free port; update it in `ecosystem.config.cjs` (`PORT`) and the Nginx `proxy_pass` together, then `pm2 restart voice-ai` + `nginx -s reload` |
