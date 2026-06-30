@@ -272,13 +272,19 @@ function HomePage() {
                     onRefresh={fetchSpeakers}
                   />
                 ))}
-                {speakers.length < MAX_SPEAKERS && (
-                  <EnrollmentCard
-                    onEnrollCondition={handleEnrollCondition}
-                    onFinalize={handleFinalize}
-                    onRefresh={fetchSpeakers}
-                  />
-                )}
+                {/* Show the "add speaker" card only when under the cap AND no
+                    enrollment is already in progress. Recording the first sample
+                    creates an `incomplete` speaker that gets its own "Resume"
+                    card; without this guard the blank card would linger and
+                    duplicate that same speaker. */}
+                {speakers.length < MAX_SPEAKERS &&
+                  !speakers.some((s) => s.enrollmentStatus === 'incomplete') && (
+                    <EnrollmentCard
+                      onEnrollCondition={handleEnrollCondition}
+                      onFinalize={handleFinalize}
+                      onRefresh={fetchSpeakers}
+                    />
+                  )}
               </div>
             </motion.div>
           )}
