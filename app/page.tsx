@@ -19,6 +19,10 @@ import { AudioFileUpload } from '@/components/live-session/AudioFileUpload';
 import { UserPlus, Radio, Settings, Brain, BarChart3 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
+// This is a 2-person session (e.g. Therapist + Client), so enrollment is capped
+// at two speakers — the "add speaker" card hides once both are enrolled.
+const MAX_SPEAKERS = 2;
+
 function HomePage() {
   const [activeTab, setActiveTab] = useState('enroll');
   const [connectionState, setConnectionState] = useState<'disconnected' | 'connecting' | 'connected'>('disconnected');
@@ -268,11 +272,13 @@ function HomePage() {
                     onRefresh={fetchSpeakers}
                   />
                 ))}
-                <EnrollmentCard
-                  onEnrollCondition={handleEnrollCondition}
-                  onFinalize={handleFinalize}
-                  onRefresh={fetchSpeakers}
-                />
+                {speakers.length < MAX_SPEAKERS && (
+                  <EnrollmentCard
+                    onEnrollCondition={handleEnrollCondition}
+                    onFinalize={handleFinalize}
+                    onRefresh={fetchSpeakers}
+                  />
+                )}
               </div>
             </motion.div>
           )}
